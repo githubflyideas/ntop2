@@ -32,6 +32,10 @@ type afPacketSource struct {
 	agg *aggregator
 	log *log.Logger
 
+	// iface / samplingN 只为采集自检保留,见 selfcheck.go。
+	iface     string
+	samplingN int
+
 	// userSamplingN > 1 表示内核挂不上带抽样的过滤器,抽样退到用户态做。
 	// 0 或 1 都表示不在用户态抽样(内核已经抽过,或者本来就是全量)。
 	userSamplingN int
@@ -53,6 +57,8 @@ func openAFPacket(cfg Config, lg *log.Logger) (Source, error) {
 
 	s := &afPacketSource{
 		fd:            fd,
+		iface:         cfg.Iface,
+		samplingN:     n,
 		agg:           newAggregator(n, DefaultMaxFlows, cfg.Sink, lg),
 		log:           lg,
 		flushInterval: DefaultFlushInterval,
@@ -92,6 +98,20 @@ func openAFPacket(cfg Config, lg *log.Logger) (Source, error) {
 }
 
 func (s *afPacketSource) Mode() Mode { return ModeAFPacket }
+
+// SelfCheck 见 selfcheck.go。
+//
+// DirectionAware 为假:AF_PACKET 收的是同一个抓包口上的两个方向,包里
+// 没有"进还是出"这个信息,所以两个方向的计数只能合在一起报。
+func (s *afPacketSource) SelfCheck() SelfCheck {
+	in, out := s.agg.dirStats()
+	iface := s.iface
+	if iface == "" {
+		iface = "全部(未指定 -iface)"
+	}
+	return SelfCheck{Mode: ModeAFPacket, Iface: iface, SamplingN: s.samplingN,
+		DirectionAware: false, In: in, Out: out}
+}
 
 func (s *afPacketSource) Run(ctx context.Context) error {
 	go s.agg.runFlushLoop(ctx, s.flushInterval)

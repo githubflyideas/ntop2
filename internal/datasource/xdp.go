@@ -26,6 +26,14 @@ type xdpSource struct {
 	egressLnk link.Link
 	// egressHook 记下出向最终挂在哪个钩子上(TCX 还是 cgroup),空表示没挂上。
 	egressHook string
+	// egressWhy 是没挂上的原因。原先这句话只进日志,而真正需要它的人不会
+	// 去翻日志,所以留一份在内存里,自检面板直接照着说。
+	egressWhy string
+
+	// iface / samplingN 只为自检保留:自检要报"在哪块网卡上、抽不抽样",
+	// 这两个值原先只存在于 Config 里,openXDP 返回后就丢了。
+	iface     string
+	samplingN int
 
 	sampleRD *ringbuf.Reader
 
@@ -80,6 +88,8 @@ func openXDP(mode Mode, cfg Config, lg *log.Logger) (Source, error) {
 	s := &xdpSource{
 		mode:          mode,
 		coll:          coll,
+		iface:         cfg.Iface,
+		samplingN:     cfg.SamplingN,
 		agg:           newAggregator(cfg.SamplingN, DefaultMaxFlows, cfg.Sink, lg),
 		log:           lg,
 		flushInterval: DefaultFlushInterval,
@@ -173,6 +183,22 @@ func (s *xdpSource) openReaders() error {
 }
 
 func (s *xdpSource) Mode() Mode { return s.mode }
+
+// SelfCheck 见 selfcheck.go。
+//
+// DirectionAware 为真:XDP 那一套是入向、出向两个独立程序,包在哪个程序
+// 里被看见就决定了方向,所以上传与下载能分开报 —— 也正因为能分开,"出向
+// 0 条"才是一个需要解释的结论。
+func (s *xdpSource) SelfCheck() SelfCheck {
+	in, out := s.agg.dirStats()
+	why := s.egressWhy
+	if why == "" && s.egressHook == "" {
+		why = "未知"
+	}
+	return SelfCheck{Mode: s.mode, Iface: s.iface, SamplingN: s.samplingN,
+		DirectionAware: true, EgressHook: s.egressHook, EgressWhy: why,
+		In: in, Out: out}
+}
 
 // Run 读 ringbuf 并周期 flush。
 func (s *xdpSource) Run(ctx context.Context) error {
