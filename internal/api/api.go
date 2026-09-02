@@ -44,6 +44,9 @@ type Server struct {
 
 	// Inputs 是当前启用的输入源描述,展示在界面顶部。
 	Inputs []string
+
+	// capture 是本机采集自检的入口,见 capture.go。
+	capture Capture
 }
 
 // Config 构造参数。
@@ -57,6 +60,9 @@ type Config struct {
 	Logger  *log.Logger
 	DataDir string
 	Inputs  []string
+
+	// Capture 是本机采集的状态,用来在界面上回答"上传到底采上了没有"。
+	Capture Capture
 }
 
 func New(cfg Config) *Server {
@@ -68,6 +74,7 @@ func New(cfg Config) *Server {
 		st: cfg.Store, au: cfg.Auth, asn: cfg.ASN, mmdb: cfg.MMDB,
 		city: cfg.City, syncer: cfg.Syncer,
 		log: lg, DataDir: cfg.DataDir, Inputs: cfg.Inputs,
+		capture:  cfg.Capture,
 		queries:  newQueryStore(cfg.DataDir),
 		settings: newSettingsStore(cfg.DataDir),
 	}
@@ -303,6 +310,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, user str
 		enrichInfo["mmdb_nodes"] = nodes
 	}
 	out["enrich"] = enrichInfo
+	out["capture"] = captureInfo(s.capture, time.Now())
 
 	writeJSON(w, http.StatusOK, out)
 }

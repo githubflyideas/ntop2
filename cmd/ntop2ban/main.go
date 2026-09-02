@@ -173,10 +173,16 @@ func main() {
 
 	var inputLabels []string
 
+	// capture 带着本机采集的状态一路交给 API:界面上的采集自检要能分清
+	// "没要求本机采集"、"要求了但起不来"、"起来了但出向没数据"这三种
+	// 情况,而只看日志的人分不清 —— 前两种在日志里长得几乎一样。
+	var capture api.Capture
+
 	if collector.HasMode(modes, collector.ModeLocal) {
+		capture.Enabled = true
 		label := startLocal(ctx, sink, localConfig{
 			iface: *iface, samplingN: *sampleN, prefer: datasource.Mode(*prefer),
-		})
+		}, &capture)
 		inputLabels = append(inputLabels, label)
 	}
 	if collector.HasMode(modes, collector.ModeSFlow) {
@@ -198,6 +204,7 @@ func main() {
 		Store: st, Auth: au, ASN: asnDB, MMDB: mmdb,
 		City: cityDB, Syncer: syncer,
 		DataDir: *dataDir, Inputs: inputLabels,
+		Capture: capture,
 	})
 	mux := http.NewServeMux()
 	srv.Routes(mux)
@@ -269,13 +276,19 @@ type localConfig struct {
 //
 // 失败不退出:界面与其他输入源仍然有用,而且用户需要能登进界面看到
 // "本机采集没起来"这个事实。
-func startLocal(ctx context.Context, sink *enrichingSink, cfg localConfig) string {
+func startLocal(ctx context.Context, sink *enrichingSink, cfg localConfig, out *api.Capture) string {
 	src, err := datasource.Open(datasource.Config{
 		Iface: cfg.iface, SamplingN: cfg.samplingN, Prefer: cfg.prefer, Sink: sink,
 	}, nil)
 	if err != nil {
+		// 原因原样留给界面:这句话里通常写着缺哪个权限或哪块网卡不存在,
+		// 转述一遍只会丢信息。
+		out.Err = err.Error()
 		log.Printf("本机采集未启动: %v", err)
 		return "local(未启动)"
+	}
+	if ck, ok := src.(datasource.Checker); ok {
+		out.Checker = ck
 	}
 	go func() {
 		if err := src.Run(ctx); err != nil {
