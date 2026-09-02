@@ -337,29 +337,34 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
           <button class="act" id="mmdbup" style="margin-left:8px">上传并生效</button>
         </div>
       </div>
-      <div class="panel">
+      <!-- 也占满一行:排除清单挪走以后这一栏只剩五行状态,而右半屏是空的。 -->
+      <div class="panel wide">
         <h2>输入源与存储</h2>
         <div id="set-sys"></div>
-
-        <h2 style="margin-top:16px">全局排除网段</h2>
-        <p class="hint">一行一个。填在这里的网段会被加到每一次查询上 ——
-          Dashboard 的每张卡片与 Explorer 一起生效,不用在每个地方各加一遍。
-          想临时看被排掉的流量,去 Explorer 勾「包含被全局排除的网段」,
-          不必回来把清单删了再建回来。</p>
-        <textarea id="ex-list" rows="5" placeholder="192.168.1.0/24
+      </div>
+    </div>
+    <!-- 排除清单单独占一整行:它挤在右边那个窄栏里时,一个填网段的多行
+         文本框只有半屏宽,而右半屏是空的 —— 越长的网段越难看清自己填了
+         什么。这一块也不属于"输入源与存储"。 -->
+    <div class="panel" style="margin-top:12px">
+      <h2>全局排除网段</h2>
+      <p class="hint">一行一个。填在这里的网段会被加到每一次查询上 ——
+        Dashboard 的每张卡片与 Explorer 一起生效,不用在每个地方各加一遍。
+        想临时看被排掉的流量,去 Explorer 勾「包含被全局排除的网段」,
+        不必回来把清单删了再建回来。</p>
+      <textarea id="ex-list" rows="5" placeholder="192.168.1.0/24
 10.0.0.0/8
 fd00::/8"></textarea>
-        <div class="bar" style="margin:8px 0 0">
-          <label class="lb">排除方式</label>
-          <select id="ex-match">
-            <option value="both">两端都在清单里才排</option>
-            <option value="either">任一端在清单里就排</option>
-          </select>
-          <button class="act" id="ex-save">保存</button>
-          <span class="hint" id="ex-msg" style="margin:0"></span>
-        </div>
-        <p class="hint" id="ex-note" style="margin:6px 0 0"></p>
+      <div class="bar" style="margin:8px 0 0">
+        <label class="lb">排除方式</label>
+        <select id="ex-match">
+          <option value="both">两端都在清单里才排</option>
+          <option value="either">任一端在清单里就排</option>
+        </select>
+        <button class="act" id="ex-save">保存</button>
+        <span class="hint" id="ex-msg" style="margin:0"></span>
       </div>
+      <p class="hint" id="ex-note" style="margin:6px 0 0"></p>
     </div>
   </section>
 </main>
@@ -1009,15 +1014,15 @@ function checkValue(field, op, raw){
   const out=[];
   for(const v of parts){
     if(kind==='int'){
-      if(!/^-?\d+$/.test(v)) return {err:field+' 是整数字段,'+v+' 不是整数'};
+      if(!/^-?\d+$/.test(v)) return {err:field+' 是整数字段,填的"'+v+'" 不是整数'};
       out.push(Number(v));
       continue;
     }
     if(kind==='ip'){
       if(op==='cidr'||op==='not_cidr'){
-        if(!cidrOk(v)) return {err:'网段要带掩码位数,写成 192.168.1.0/24 这样:'+v};
+        if(!cidrOk(v)) return {err:'网段要带掩码位数,写成 192.168.1.0/24 这样,填的是"'+v+'"'};
       } else if(!ipOk(v)){
-        return {err:'不是合法的 IP 地址:'+v};
+        return {err:'"'+v+'" 不是合法的 IP 地址'};
       }
     }
     out.push(v);
