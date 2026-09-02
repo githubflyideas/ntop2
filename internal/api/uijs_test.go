@@ -20,6 +20,12 @@ import (
 // pivot 补不齐时间点就让堆叠面积图的高度全错,coerce 不转类型就让端口过滤
 // 报 ClickHouse 类型错,localInput 切错时区就让自定义区间整体偏移。
 //
+// filterTree 与 sortChoices 是同一类:filterTree 把「排除」那块拼错(比如
+// 漏了 NOT 或者把 OR 写成 AND)照样能查出结果,只是排掉的东西不对;
+// sortChoices 多给一个选项,后端会把整个查询拒掉,而拒绝发生在点了查询
+// 之后。checkValue 是唯一在提交前拦住填法错误的地方,漏判等于把错误
+// 推到 ClickHouse 的类型异常里。
+//
 // 没有 node 时跳过而不是失败:node 只是开发期的校验工具,不是构建依赖。
 func TestUIPureFunctions(t *testing.T) {
 	node, err := exec.LookPath("node")
@@ -32,12 +38,20 @@ func TestUIPureFunctions(t *testing.T) {
 	// 被测函数从 indexHTML 里按名字抠出来,而不是在测试里复制一份 ——
 	// 复制的那份会跟界面慢慢走散,测试照样全绿。
 	var b strings.Builder
-	b.WriteString(mustSnippet(t, "const PROTO = ", true))
-	for _, fn := range []string{"protoLabel", "coerce", "isIntField", "pivot", "localInput"} {
+	for _, c := range []string{"const PROTO = ", "const esc = ", "const DETAIL_SORTS = "} {
+		b.WriteString(mustSnippet(t, c, true))
 		b.WriteString("\n\n")
-		b.WriteString(mustSnippet(t, "function "+fn+"(", false))
 	}
-	b.WriteString("\n\nmodule.exports={protoLabel,coerce,isIntField,pivot,localInput,PROTO};\n")
+	for _, fn := range []string{
+		"protoLabel", "coerce", "isIntField", "pivot", "localInput",
+		"ts", "fmtBytes", "fmtNum",
+		"ipOk", "cidrOk", "checkValue", "filterTree", "sortChoices", "cellText", "cellClass",
+	} {
+		b.WriteString(mustSnippet(t, "function "+fn+"(", false))
+		b.WriteString("\n\n")
+	}
+	b.WriteString("module.exports={protoLabel,coerce,isIntField,pivot,localInput,PROTO," +
+		"ipOk,cidrOk,checkValue,filterTree,sortChoices,cellText,cellClass};\n")
 	write(t, filepath.Join(dir, "ui.js"), b.String())
 
 	// FIELDS 用后端真实的字段表,不手写:coerce 判类型完全依赖它,
