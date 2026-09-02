@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -417,11 +418,37 @@ func compileLeaf(c Condition) (string, []any, error) {
 	case OpCIDR:
 		// isIPAddressInRange 接受 CIDR 字符串,由 ClickHouse 做前缀比较,
 		// 比在 Go 侧展开成 IP 范围再生成 BETWEEN 更准确(也支持 IPv6)。
+		prefix, err := mappedPrefix(fmt.Sprint(c.Value))
+		if err != nil {
+			return "", nil, err
+		}
 		return fmt.Sprintf("isIPAddressInRange(IPv6NumToString(%s), ?)", col),
-			[]any{fmt.Sprint(c.Value)}, nil
+			[]any{prefix}, nil
 	}
 
 	return "", nil, fmt.Errorf("字段 %q 不支持运算符 %q", c.Field, c.Operator)
+}
+
+// mappedPrefix 把 IPv4 网段换成 IPv4-mapped IPv6 的写法。
+//
+// 为什么必须换:src_ip/dst_ip 是 IPv6 列,IPv4 以 IPv4-mapped 存放,
+// IPv6NumToString 出来是 "::ffff:10.252.145.36"。而 ClickHouse 的
+// isIPAddressInRange 要求地址与前缀同族 —— 拿它去比 "10.252.145.0/24"
+// 一律返回 0。不报错、查询成功、结果永远是空的,这是最难查的一类失效。
+// 比 "::ffff:10.252.145.0/120" 才是 1(掩码位数要加 96)。
+//
+// 顺带把写坏的网段变成明确的错误。以前 "10.0.0.0"(少掩码)、"/33"、
+// 随便一串字都是原样递给 ClickHouse,同样是静默匹配不到。
+func mappedPrefix(v string) (string, error) {
+	p, err := netip.ParsePrefix(strings.TrimSpace(v))
+	if err != nil {
+		return "", fmt.Errorf("网段 %q 不合法(要写成 10.0.0.0/8 或 2001:db8::/32 这样): %w", v, err)
+	}
+	p = p.Masked()
+	if p.Addr().Is4() {
+		return netip.PrefixFrom(netip.AddrFrom16(p.Addr().As16()), p.Bits()+96).String(), nil
+	}
+	return p.String(), nil
 }
 
 // toSlice 把 JSON 反序列化出来的值转成切片。

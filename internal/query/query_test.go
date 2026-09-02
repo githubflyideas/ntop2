@@ -605,3 +605,43 @@ func TestExplicitAggTableRejectsMissingFilterField(t *testing.T) {
 		t.Fatalf("聚合表上过滤 src_city 应报错并点明字段, got %v", err)
 	}
 }
+
+// src_ip/dst_ip 是 IPv6 列,IPv4 以 IPv4-mapped 存放,而
+// isIPAddressInRange 要求地址与前缀同族。拿 10.252.145.0/24 去比
+// ::ffff:10.252.145.36 一律返回 0 —— 不报错、查询成功、结果永远为空。
+// 所以编译期必须把 IPv4 网段换成映射形态,掩码加 96。
+func TestCIDRMatchesIPv4StoredInIPv6Column(t *testing.T) {
+	q := baseQuery()
+	q.Filters = Condition{Field: "src_ip", Operator: OpCIDR, Value: "10.252.145.0/24"}
+	c, err := Compile(q)
+	if err != nil {
+		t.Fatalf("编译失败: %v", err)
+	}
+	got := c.Args[len(c.Args)-1]
+	if got != "::ffff:10.252.145.0/120" {
+		t.Errorf("IPv4 网段应当编译成 ::ffff:10.252.145.0/120,实际 %v", got)
+	}
+}
+
+func TestCIDRKeepsIPv6PrefixAsIs(t *testing.T) {
+	q := baseQuery()
+	q.Filters = Condition{Field: "src_ip", Operator: OpCIDR, Value: "2001:db8::/32"}
+	c, err := Compile(q)
+	if err != nil {
+		t.Fatalf("编译失败: %v", err)
+	}
+	if got := c.Args[len(c.Args)-1]; got != "2001:db8::/32" {
+		t.Errorf("IPv6 网段应当原样传下去,实际 %v", got)
+	}
+}
+
+// 写坏的网段以前是原样递给 ClickHouse,同样静默匹配不到。
+func TestCIDRRejectsGarbage(t *testing.T) {
+	for _, v := range []string{"10.252.145.0", "10.252.145.0/33", "不是网段", ""} {
+		q := baseQuery()
+		q.Filters = Condition{Field: "src_ip", Operator: OpCIDR, Value: v}
+		if _, err := Compile(q); err == nil {
+			t.Errorf("网段 %q 应当报错,而不是静默匹配不到", v)
+		}
+	}
+}
