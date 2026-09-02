@@ -66,6 +66,10 @@ ntop2ban 本身是静态编译的 Go 二进制,上面三条都不适用于它。
 为什么要 root:抓本机流量要 XDP 或 AF_PACKET,这两个都要
 CAP_NET_RAW/CAP_NET_ADMIN。只收 sFlow/NetFlow 的话不需要 root。
 
+界面上 Explorer 那一页可以多选分组维度与指标、按时间粒度分桶,也能切到
+明细模式直接看原始流记录;设置页可以填一份全局排除网段清单,填了之后所
+有视图都不再算那部分流量,内网互访这类噪音只需要写一次。
+
 ntop2ban 只做观测与统计,不封禁任何东西。封禁是 xdp-ban 的事。
 
 完整文档:https://github.com/githubflyideas/ntop2ban
