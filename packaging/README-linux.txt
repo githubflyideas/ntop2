@@ -45,6 +45,24 @@ ntop2ban 本身是静态编译的 Go 二进制,上面三条都不适用于它。
   -input sflow       不抓本机网卡,改收交换机导出的 sFlow(默认端口 6343);
                      netflow 同理(2055)。
 
+多台机器共用一个 ClickHouse
+---------------------------
+
+不需要给每个节点单独的表或库,所有节点写同一张表,靠 -node-id 区分。
+存储那台:
+
+    NTOP2BAN_CLICKHOUSE_PASSWORD='你的密码' \
+      sudo -E ./ntop2ban -clickhouse-listen 0.0.0.0 -node-id 1 -iface eth0
+
+其余节点:
+
+    NTOP2BAN_CLICKHOUSE_PASSWORD='同一个密码' \
+      sudo -E ./ntop2ban -clickhouse-addr 10.0.0.10:9000 -node-id 2 -iface eth0
+
+密码只走环境变量,不做命令行参数 —— 参数会出现在 ps 的输出里。不设密码
+也能开,只会打一行警告:9000 与 8123 两个口是一起开出去的,库里是完整的
+通信记录,边界靠防火墙还是靠密码由你决定。
+
 为什么要 root:抓本机流量要 XDP 或 AF_PACKET,这两个都要
 CAP_NET_RAW/CAP_NET_ADMIN。只收 sFlow/NetFlow 的话不需要 root。
 

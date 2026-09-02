@@ -335,6 +335,35 @@ query benchmark 决定,而不是凭经验。
 (禁止让亿级 flow 实时 JOIN GeoIP 表)。代价是 GeoIP 库更新后历史数据
 保持当时快照,这是想要的行为:历史应该反映当时的归属。
 
+### 一台机器布 ClickHouse,别的节点写进来
+
+这是支持的,而且**不需要给每个节点单独的表或单独的库**。所有节点写同一张
+`flows`,靠 `device_id` 区分 —— 那个维度已经在预聚合表的 `ORDER BY` 里,
+按它分组、过滤、画趋势都不用额外做什么。分表反而会坏事:跨节点的对比要
+自己 UNION,物化视图和 TTL 要成倍维护,而 ClickHouse 本来就是为多个写入端
+同时插同一张表设计的。
+
+存储那台:
+
+```bash
+NTOP2BAN_CLICKHOUSE_PASSWORD='换成你的密码'   ./ntop2ban -clickhouse-listen 0.0.0.0 -node-id 1 -iface eth0 user=admin passwd=xxx
+```
+
+其余每个节点:
+
+```bash
+NTOP2BAN_CLICKHOUSE_PASSWORD='同一个密码'   ./ntop2ban -clickhouse-addr 10.0.0.10:9000 -node-id 2 -iface eth0 user=admin passwd=xxx
+```
+
+`-node-id` 必须各不相同 —— 本机采集的记录 `device_id` 原本恒为 0,不给
+编号的话几个节点的流量在库里堆成一坨,而这件事不会报错。
+
+权限上有一处要注意:`store.Open` 每次启动都会跑一遍 `CREATE DATABASE /
+TABLE / MATERIALIZED VIEW IF NOT EXISTS`(schema 是存储层的实现细节,不想
+让部署者手工维护一份 DDL 并保持同步),所以节点用的账号需要建库建表的权限,
+只给 `INSERT` 会在启动时失败。要收紧到只读只写就自己先把 schema 建好、
+再单独开一个 `INSERT` 账号 —— 但那样每次升级都要自己补 DDL,单机部署不建议。
+
 ## 启动参数
 
 `./ntop2ban -h` 会打印这份清单,下面按用途分组,顺带说清默认值的理由。
@@ -351,6 +380,9 @@ query benchmark 决定,而不是凭经验。
 | `-data-dir` | `./ntop2ban-data` | 数据目录。托管模式下 ClickHouse 的库文件也在这里 |
 | `-clickhouse-addr` | 空(托管子进程) | 外部 ClickHouse 的 `host:9000`;给了就不再拉起子进程 |
 | `-clickhouse-bin` | 空(同目录 `./clickhouse`) | 托管用的 clickhouse 二进制路径 |
+| `-clickhouse-listen` | `127.0.0.1` | 托管的 ClickHouse 自己监听哪里。要让别的节点写进来就填 `0.0.0.0` |
+| `-clickhouse-user` | `default` | ClickHouse 账号。密码走环境变量 `NTOP2BAN_CLICKHOUSE_PASSWORD` |
+| `-node-id` | `0` | 本节点编号。多个节点写同一个 ClickHouse 时各给一个 |
 | `-retention-days` | `90` | 明细数据保留天数,靠 ClickHouse 的 TTL 落地 |
 | `-ip2asn` | 空 | ip2asn TSV(`.tsv` / `.tsv.gz`),提供 ASN / 国家 / 组织 |
 | `-mmdb` | 空 | GeoLite2-City mmdb,额外提供城市与区域;也可在界面上传 |
@@ -420,6 +452,12 @@ Query AST 示例:
 变成一次故障 —— 没时间范围的聚合在单机上一次就能把 ClickHouse 打满。
 字段与运算符都有白名单,而且运算符是**逐字段**限制的:`src_ip` 不给
 `like`(在 IPv6 列上做字符串匹配能跑但结果反直觉),`bytes` 不给 `cidr`。
+
+IP 字段的 `cidr` / `not_cidr` 直接写网段,例如 `10.252.145.0/24` —— 把自己的
+内网从图里排除掉就是 `src_ip not_cidr 10.252.145.0/24` 加一条
+`dst_ip not_cidr 10.252.145.0/24`。IPv4 存的是 IPv4-mapped IPv6,换算由服务端
+做,不用自己写成 `::ffff:10.252.145.0/120`;网段写坏了会直接报错,不会静默
+返回空结果。
 
 ## 从源码构建
 
