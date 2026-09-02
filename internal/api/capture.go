@@ -46,8 +46,12 @@ func captureInfo(c Capture, now time.Time) map[string]any {
 			"findings": []datasource.Finding{{
 				Level: datasource.LevelWarn,
 				Title: "本机抓包:没有启动",
-				Detail: "要求了本机采集但起不来,所以这台机器自己收发的包一条都没有统计。" +
-					"原因:" + c.Err + "。多数情况是权限不够(需要 root 或 CAP_NET_RAW/CAP_BPF)" +
+				// 原因本身经常是多行的(三级降级各一行),所以前后各留一个
+				// 换行、面板那边用 pre-wrap 排版。挤成一段的话最后那句提示
+				// 会黏在内核错误信息的尾巴上,读起来像同一句话。
+				Detail: "要求了本机采集但起不来,所以这台机器自己收发的包一条都没有统计。\n" +
+					"原因:" + c.Err + "\n" +
+					"多数情况是权限不够(需要 root 或 CAP_NET_RAW/CAP_BPF)" +
 					"或者 -iface 写的网卡不存在。",
 			}},
 		}

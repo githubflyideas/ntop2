@@ -151,7 +151,8 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
 .fnd.l-warn{border-left-color:var(--amber)}
 .fnd.l-info{border-left-color:var(--cyan)}
 .fnd .t{font-weight:600;font-size:14.5px}
-.fnd .d{font-size:13.5px;color:var(--dim);margin-top:3px;line-height:1.55}
+.fnd .d{font-size:13.5px;color:var(--dim);margin-top:3px;line-height:1.55;
+ white-space:pre-wrap}
 .src{border:1px solid var(--line);border-radius:7px;padding:11px 13px;margin-bottom:8px}
 .src .top{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .src .nm{font-weight:600;font-size:14.5px}
