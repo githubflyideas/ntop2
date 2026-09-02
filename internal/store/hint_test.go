@@ -24,6 +24,18 @@ func TestStartupHintRecognizesOldGlibc(t *testing.T) {
 	}
 }
 
+// CentOS 6 上真实遇到的:glibc 2.12 过得了 2.4 的门槛,却卡在 ld.so
+// 读 .note.ABI-tag 这一步。这条错误只出现在 stderr 里。
+func TestStartupHintRecognizesOldKernel(t *testing.T) {
+	got := startupHint("exit status 1", "FATAL: kernel too old\n")
+	if !strings.Contains(got, "内核") {
+		t.Errorf("提示里应当点明是内核太旧: %q", got)
+	}
+	if !strings.Contains(got, "-clickhouse-addr") {
+		t.Errorf("提示里没给出出路: %q", got)
+	}
+}
+
 func TestStartupHintRecognizesIllegalInstruction(t *testing.T) {
 	got := startupHint("signal: illegal instruction", "")
 	if !strings.Contains(got, "SSE4.2") {

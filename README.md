@@ -82,8 +82,10 @@ macOS 上唯一真正缺的是 XDP —— 内核里没有可编程快路径这�
 xdp-native` 之类在 Mac 上不存在,只有 `bpf-device` 一级。
 
 Linux 大包里的 clickhouse 是官方**定版**构建(`packages.clickhouse.com/tgz/lts`,
-版本写在 Makefile 的 `CH_VERSION`),门槛是 **glibc 2.4**、CPU 要有 **SSE4.2**
-(x86-64-v2;arm64 要 ARMv8.2)。定版渠道没有 `amd64compat`,所以屏蔽了这些指令的
+版本写在 Makefile 的 `CH_VERSION`),门槛是 **glibc 2.4**、**内核 3.2**、CPU 要有
+**SSE4.2**(x86-64-v2;arm64 要 ARMv8.2)。内核那条来自二进制的 `.note.ABI-tag`,
+宿主机的 `ld.so` 读它、比自己旧就直接 `FATAL: kernel too old` —— CentOS 6 的
+2.6.32 卡在这里,而它的 glibc 2.12 反而过得了 2.4。定版渠道没有 `amd64compat`,所以屏蔽了这些指令的
 虚拟机与很老的物理机上跑不了内嵌实例 —— 那种机器请用 `-clickhouse-addr` 接一个
 外部 ClickHouse,ntop2ban 自己是静态 Go 二进制,不受这些门槛影响。启动失败时进程
 会直接把原因和该走哪条路打出来。

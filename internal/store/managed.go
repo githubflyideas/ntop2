@@ -214,6 +214,16 @@ func startupHint(detail, stderrTail string) string {
 			"\n(ntop2ban 自己是静态二进制,不受 glibc 影响。)"
 	}
 
+	// 内核太旧:定版二进制的 .note.ABI-tag 写着 Linux 3.2.0,宿主机的
+	// ld.so 读这个 note,内核比它旧就拒绝加载。CentOS 6 的原厂内核
+	// (2.6.32)卡在这里,而它的 glibc 2.12 反而是过得了 2.4 那条门槛的。
+	if strings.Contains(all, "kernel too old") {
+		return "\n\n这台机器的内核比包里的 clickhouse 要求的旧(它的 ABI-tag 要求 Linux 3.2)。" +
+			"\n升内核,或者改用外部 ClickHouse:" +
+			"\n  ./ntop2ban -clickhouse-addr <那台机器的 IP>:9000 ..." +
+			"\n(ntop2ban 自己是静态二进制,2.6.32 上也跑得起来。)"
+	}
+
 	// CPU 指令集不够:定版构建要求 x86-64-v2(SSE4.2/POPCNT)。
 	if strings.Contains(all, "illegal instruction") {
 		return "\n\n这台机器的 CPU 不支持该 clickhouse 构建所需的指令集" +
