@@ -17,7 +17,10 @@ import (
 	"time"
 
 	"github.com/githubflyideas/ntop2ban/internal/auth"
+	"github.com/githubflyideas/ntop2ban/internal/collector"
+	"github.com/githubflyideas/ntop2ban/internal/dnscache"
 	"github.com/githubflyideas/ntop2ban/internal/enrich"
+	"github.com/githubflyideas/ntop2ban/internal/live"
 	"github.com/githubflyideas/ntop2ban/internal/query"
 	"github.com/githubflyideas/ntop2ban/internal/store"
 )
@@ -47,6 +50,13 @@ type Server struct {
 
 	// capture 是本机采集自检的入口,见 capture.go。
 	capture Capture
+
+	// feed 是实时页的数据来源:内存里最近的若干条记录。见 live.go。
+	feed *live.Feed
+	// reporters 是能报告 UDP 到达情况的输入源(sFlow / NetFlow)。
+	reporters []collector.Reporter
+	// dns 是反查域名的解析器。nil 表示没开 -dns-resolve。
+	dns *dnscache.Resolver
 }
 
 // Config 构造参数。
@@ -63,6 +73,14 @@ type Config struct {
 
 	// Capture 是本机采集的状态,用来在界面上回答"上传到底采上了没有"。
 	Capture Capture
+
+	// Feed 是实时缓冲,Reporters 是能报告到达情况的输入源。两者一起
+	// 回答"现在有包进来吗"。
+	Feed      *live.Feed
+	Reporters []collector.Reporter
+
+	// DNS 是反查域名的解析器。留空则界面上不显示域名。
+	DNS *dnscache.Resolver
 }
 
 func New(cfg Config) *Server {
@@ -74,7 +92,8 @@ func New(cfg Config) *Server {
 		st: cfg.Store, au: cfg.Auth, asn: cfg.ASN, mmdb: cfg.MMDB,
 		city: cfg.City, syncer: cfg.Syncer,
 		log: lg, DataDir: cfg.DataDir, Inputs: cfg.Inputs,
-		capture:  cfg.Capture,
+		capture: cfg.Capture,
+		feed:    cfg.Feed, reporters: cfg.Reporters, dns: cfg.DNS,
 		queries:  newQueryStore(cfg.DataDir),
 		settings: newSettingsStore(cfg.DataDir),
 	}
@@ -105,6 +124,11 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/settings/save", s.authed(s.handleSettingsSave))
 
 	mux.HandleFunc("/api/v1/overview", s.authed(s.handleOverview))
+
+	// 实时页与反查域名。两者都只读内存,不碰 ClickHouse —— 实时页存在的
+	// 理由就是"查不到库的时候也要能看见"。
+	mux.HandleFunc("/api/v1/live", s.authed(s.handleLive))
+	mux.HandleFunc("/api/v1/resolve", s.authed(s.handleResolve))
 	mux.HandleFunc("/api/v1/enrich/mmdb", s.authed(s.handleMMDBUpload))
 	mux.HandleFunc("/api/v1/enrich/sources", s.authed(s.handleEnrichSources))
 	mux.HandleFunc("/api/v1/enrich/sync", s.authed(s.handleEnrichSync))
@@ -311,6 +335,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, user str
 	}
 	out["enrich"] = enrichInfo
 	out["capture"] = captureInfo(s.capture, time.Now())
+	out["dns"] = s.dnsInfo()
 
 	writeJSON(w, http.StatusOK, out)
 }
