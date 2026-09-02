@@ -23,8 +23,10 @@ import (
 	"github.com/githubflyideas/ntop2ban/internal/auth"
 	"github.com/githubflyideas/ntop2ban/internal/collector"
 	"github.com/githubflyideas/ntop2ban/internal/datasource"
+	"github.com/githubflyideas/ntop2ban/internal/dnscache"
 	"github.com/githubflyideas/ntop2ban/internal/enrich"
 	"github.com/githubflyideas/ntop2ban/internal/flow"
+	"github.com/githubflyideas/ntop2ban/internal/live"
 	"github.com/githubflyideas/ntop2ban/internal/store"
 )
 
@@ -54,6 +56,14 @@ func main() {
 		retention = flag.Int("retention-days", 90, "明细数据保留天数")
 		nodeID    = flag.Uint("node-id", 0,
 			"本节点编号。多个节点往同一个 ClickHouse 写时各给一个,否则分不清数据来自哪台机器")
+
+		dnsResolve = flag.Bool("dns-resolve", false,
+			"把界面上显示的 IP 反查成域名。默认关闭 —— 一个流量分析工具擅自往外发 DNS 查询"+
+				"会暴露它在看哪些地址,这该由你决定")
+		dnsUpstream = flag.String("dns-upstream", "",
+			"反查用的上游 DNS,如 192.168.1.1:53(不写端口默认 53)。留空则用系统解析器")
+		dnsTTL = flag.Duration("dns-ttl", dnscache.DefaultTTL,
+			"反查结果的缓存时长。同一个地址在这段时间内只问上游一次,查不到的结果也一样缓存")
 
 		ip2asnPath = flag.String("ip2asn", "", "ip2asn TSV 路径(.tsv 或 .tsv.gz),提供 ASN/国家/组织")
 		mmdbPath   = flag.String("mmdb", "", "GeoLite2-City mmdb 路径,额外提供城市与区域;也可在界面上传")
@@ -142,6 +152,24 @@ func main() {
 	}
 	defer mmdb.Close()
 
+	// 反查域名。参数写错时直接退出而不是退回系统解析器:"参数看着生效了
+	// 其实没生效"是最难查的一类问题。
+	var resolver *dnscache.Resolver
+	if *dnsResolve {
+		resolver, err = dnscache.New(dnscache.Config{
+			Upstream: *dnsUpstream, TTL: *dnsTTL,
+		})
+		if err != nil {
+			log.Fatalf("DNS 参数无效: %v", err)
+		}
+		up := *dnsUpstream
+		if up == "" {
+			up = "系统解析器"
+		}
+		log.Printf("反查域名已开启(上游 %s,缓存 %s)—— 只解析界面上要显示的地址,"+
+			"不写进数据库", up, *dnsTTL)
+	}
+
 	// ClickHouse 的密码只从环境变量取,不做命令行参数 —— 命令行参数会
 	// 出现在 ps 的输出里,任何本机账号都能看到。
 	chPass := os.Getenv("NTOP2BAN_CLICKHOUSE_PASSWORD")
@@ -164,14 +192,23 @@ func main() {
 			s.TotalRows, s.CompressedGB, *retention)
 	}
 
+	// 实时缓冲挂在写库前面。放在这里而不是让存储层去喂它,是为了让"看得
+	// 到实况"这件事不依赖写库成功 —— 写库失败时界面照样有数据,而那正是
+	// 最需要看实况的时候。
+	feed := live.New(0)
+
 	// 富化包在存储前面:sink 收到 flow 先富化再写库。
 	sink := &enrichingSink{st: st, en: enrich.NewEnricher(asnDB, mmdb, cityDB),
-		nodeID: uint32(*nodeID)}
+		nodeID: uint32(*nodeID), feed: feed}
 	if *nodeID != 0 {
 		log.Printf("本节点编号 %d —— 界面上按 device_id 分组即可区分各节点", *nodeID)
 	}
 
 	var inputLabels []string
+
+	// reporters 是能报告 UDP 到达情况的输入源。实时页要靠它区分"没人在发"
+	// 与"发了但解不开"。
+	var reporters []collector.Reporter
 
 	// capture 带着本机采集的状态一路交给 API:界面上的采集自检要能分清
 	// "没要求本机采集"、"要求了但起不来"、"起来了但出向没数据"这三种
@@ -186,17 +223,19 @@ func main() {
 		inputLabels = append(inputLabels, label)
 	}
 	if collector.HasMode(modes, collector.ModeSFlow) {
-		if l, err := startSFlow(ctx, sink, *sflowListen); err != nil {
+		if rp, l, err := startSFlow(ctx, sink, *sflowListen); err != nil {
 			log.Printf("sFlow 未启动: %v", err)
 		} else {
 			inputLabels = append(inputLabels, l)
+			reporters = append(reporters, rp)
 		}
 	}
 	if collector.HasMode(modes, collector.ModeNetFlow) {
-		if l, err := startNetFlow(ctx, sink, *netflowListen); err != nil {
+		if rp, l, err := startNetFlow(ctx, sink, *netflowListen); err != nil {
 			log.Printf("NetFlow 未启动: %v", err)
 		} else {
 			inputLabels = append(inputLabels, l)
+			reporters = append(reporters, rp)
 		}
 	}
 
@@ -205,6 +244,7 @@ func main() {
 		City: cityDB, Syncer: syncer,
 		DataDir: *dataDir, Inputs: inputLabels,
 		Capture: capture,
+		Feed:    feed, Reporters: reporters, DNS: resolver,
 	})
 	mux := http.NewServeMux()
 	srv.Routes(mux)
@@ -237,6 +277,9 @@ type enrichingSink struct {
 	st *store.Store
 	en *enrich.Enricher
 
+	// feed 是实时缓冲。可以为 nil(测试里),Observe 之前要判。
+	feed *live.Feed
+
 	// nodeID 盖在本机采集的记录上。
 	//
 	// 一台机器布 ClickHouse、别的节点写进来是正常部署形态,但本机采集的
@@ -248,6 +291,11 @@ type enrichingSink struct {
 func (s *enrichingSink) Append(ctx context.Context, batch []flow.Flow) error {
 	s.stamp(batch)
 	s.en.Apply(batch)
+	// 先记进实时缓冲再写库:顺序反过来的话,写库一失败实时页就跟着空,
+	// 而"采集正常、写库失败"恰恰是最需要在界面上看出来的那种故障。
+	if s.feed != nil {
+		s.feed.Observe(batch)
+	}
 	return s.st.Append(ctx, batch)
 }
 
@@ -299,10 +347,10 @@ func startLocal(ctx context.Context, sink *enrichingSink, cfg localConfig, out *
 	return "local/" + string(src.Mode())
 }
 
-func startSFlow(ctx context.Context, sink *enrichingSink, listen string) (string, error) {
+func startSFlow(ctx context.Context, sink *enrichingSink, listen string) (collector.Reporter, string, error) {
 	src, err := collector.NewSFlowSource(collector.SFlowConfig{Listen: listen, Sink: sink})
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	log.Printf("sFlow v5 监听 %s", listen)
 	go func() {
@@ -311,13 +359,13 @@ func startSFlow(ctx context.Context, sink *enrichingSink, listen string) (string
 		}
 	}()
 	go func() { <-ctx.Done(); _ = src.Close() }()
-	return "sflow" + listen, nil
+	return src, "sflow" + listen, nil
 }
 
-func startNetFlow(ctx context.Context, sink *enrichingSink, listen string) (string, error) {
+func startNetFlow(ctx context.Context, sink *enrichingSink, listen string) (collector.Reporter, string, error) {
 	src, err := collector.NewNetFlowSource(collector.NetFlowConfig{Listen: listen, Sink: sink})
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	log.Printf("NetFlow v5 监听 %s", listen)
 	go func() {
@@ -326,7 +374,7 @@ func startNetFlow(ctx context.Context, sink *enrichingSink, listen string) (stri
 		}
 	}()
 	go func() { <-ctx.Done(); _ = src.Close() }()
-	return "netflow" + listen, nil
+	return src, "netflow" + listen, nil
 }
 
 // openStore 打开存储。指定 -clickhouse-addr 连外部实例,否则托管子进程。
