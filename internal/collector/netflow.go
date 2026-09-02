@@ -42,6 +42,9 @@ type NetFlowSource struct {
 	flushAt  time.Time
 	flushInt time.Duration
 
+	// arr 是到达计数,见 arrival.go。
+	arr counter
+
 	// 解码错误日志限流:版本配错(把 v9 发到 v5 端口)会让每个包都
 	// 解码失败,不限流的话日志会以上报速率增长。
 	lastLog    time.Time
@@ -103,6 +106,9 @@ func NewNetFlowSource(cfg NetFlowConfig) (*NetFlowSource, error) {
 
 func (s *NetFlowSource) Name() string { return "netflow-v5" }
 
+// Arrival 实现 Reporter。
+func (s *NetFlowSource) Arrival() Arrival { return s.arr.snapshot() }
+
 func (s *NetFlowSource) Close() error {
 	if s.conn != nil {
 		return s.conn.Close()
@@ -138,12 +144,14 @@ func (s *NetFlowSource) Run(ctx context.Context) error {
 
 		flows, err := DecodeNetFlowV5(buf[:n], src.IP)
 		if err != nil {
+			s.arr.bad(err)
 			// 单个畸形包不终止 collector:上游设备可能发了别的版本
 			// (v9/IPFIX 发到同一个端口很常见)。记一次日志就够,
 			// 每包都记会在版本配错时刷满磁盘。
 			s.logOnce(err)
 			continue
 		}
+		s.arr.got(src.IP.String(), len(flows))
 		s.batch = append(s.batch, flows...)
 		s.maybeFlush(ctx)
 	}

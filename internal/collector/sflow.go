@@ -51,6 +51,9 @@ type SFlowSource struct {
 	flushAt  time.Time
 	flushInt time.Duration
 
+	// arr 是到达计数,见 arrival.go。
+	arr counter
+
 	lastLog    time.Time
 	suppressed int
 }
@@ -104,6 +107,9 @@ func NewSFlowSource(cfg SFlowConfig) (*SFlowSource, error) {
 
 func (s *SFlowSource) Name() string { return "sflow-v5" }
 
+// Arrival 实现 Reporter。
+func (s *SFlowSource) Arrival() Arrival { return s.arr.snapshot() }
+
 func (s *SFlowSource) Close() error {
 	if s.conn != nil {
 		return s.conn.Close()
@@ -136,9 +142,11 @@ func (s *SFlowSource) Run(ctx context.Context) error {
 
 		flows, err := DecodeSFlowV5(buf[:n], src.IP)
 		if err != nil {
+			s.arr.bad(err)
 			s.logOnce(err)
 			continue
 		}
+		s.arr.got(src.IP.String(), len(flows))
 		s.batch = append(s.batch, flows...)
 		s.maybeFlush(ctx)
 	}
