@@ -316,3 +316,96 @@ func TestEnricherWithNilDBDoesNotPanic(t *testing.T) {
 		t.Errorf("应用分类不依赖富化库, want ssh, got %q", batch[0].Application)
 	}
 }
+
+// TestClassifyWellKnownNamesAreStable 钉住一批常见端口的名字。
+//
+// 存量数据里的 application 是当时的名字,改名会让"上周的 https"和
+// "今天的 https"在同一张图上算成两个东西。所以这批名字只能加不能改,
+// 这个测试就是那道闸。
+func TestClassifyWellKnownNamesAreStable(t *testing.T) {
+	cases := []struct {
+		proto uint8
+		port  uint16
+		want  string
+	}{
+		{6, 22, "ssh"}, {6, 80, "http"}, {6, 443, "https"},
+		{6, 445, "smb"}, {6, 3306, "mysql"}, {6, 3389, "rdp"},
+		{6, 5432, "postgresql"}, {6, 6379, "redis"},
+		{6, 8123, "clickhouse-http"}, {6, 9000, "clickhouse"},
+		{6, 27017, "mongodb"}, {17, 53, "dns"}, {17, 123, "ntp"},
+		{17, 443, "quic"}, {17, 6343, "sflow"}, {17, 2055, "netflow"},
+		{17, 51820, "wireguard"},
+	}
+	for _, c := range cases {
+		if got := Classify(c.proto, 54321, c.port); got != c.want {
+			t.Errorf("Classify(%d, _, %d) = %q, want %q", c.proto, c.port, got, c.want)
+		}
+	}
+}
+
+// TestClassifyHomeNetworkPorts 家用 NAS/桌面机上真会出现的那批端口 ——
+// 收录它们才是这张表存在的理由,否则一台 NAS 的流量大半是 tcp/32400
+// 这种看不出软件名的条目。
+func TestClassifyHomeNetworkPorts(t *testing.T) {
+	cases := []struct {
+		proto uint8
+		port  uint16
+		want  string
+	}{
+		{6, 32400, "plex"}, {6, 8096, "jellyfin"}, {6, 22000, "syncthing"},
+		{6, 548, "afp"}, {6, 7000, "airplay"}, {6, 5938, "teamviewer"},
+		{6, 8006, "proxmox"}, {6, 11434, "ollama"}, {6, 51413, "transmission"},
+		{17, 5353, "mdns"}, {17, 1900, "ssdp"}, {17, 5355, "llmnr"},
+		{17, 3702, "ws-discovery"}, {17, 41641, "tailscale"},
+		{17, 9993, "zerotier"},
+	}
+	for _, c := range cases {
+		if got := Classify(c.proto, 54321, c.port); got != c.want {
+			t.Errorf("Classify(%d, _, %d) = %q, want %q", c.proto, c.port, got, c.want)
+		}
+	}
+}
+
+// TestClassifyPortRanges 占一段端口的协议要整段认出来,而不是只认头一个。
+func TestClassifyPortRanges(t *testing.T) {
+	for _, port := range []uint16{6881, 6885, 6889} {
+		if got := Classify(6, 54321, port); got != "bittorrent" {
+			t.Errorf("tcp %d = %q, want bittorrent", port, got)
+		}
+		if got := Classify(17, 54321, port); got != "bittorrent" {
+			t.Errorf("udp %d = %q, want bittorrent", port, got)
+		}
+	}
+	// 区间外一位就不该再算进来
+	if got := Classify(6, 54321, 6890); got != "tcp/6890" {
+		t.Errorf("tcp 6890 = %q, want tcp/6890", got)
+	}
+	if got := Classify(6, 54321, 6005); got != "x11" {
+		t.Errorf("tcp 6005 = %q, want x11", got)
+	}
+	if got := Classify(17, 54321, 33500); got != "traceroute" {
+		t.Errorf("udp 33500 = %q, want traceroute", got)
+	}
+}
+
+// TestClassifyPgbouncerPort pgbouncer 是 6432。表里原来写成 5432+1,
+// 那个算术表达式在 map 字面量里合法却算出 5433,于是 pgbouncer 一直
+// 挂在一个没人用的端口上。
+func TestClassifyPgbouncerPort(t *testing.T) {
+	if got := Classify(6, 54321, 6432); got != "pgbouncer" {
+		t.Errorf("tcp 6432 = %q, want pgbouncer", got)
+	}
+	if got := Classify(6, 54321, 5433); got != "tcp/5433" {
+		t.Errorf("tcp 5433 = %q, want tcp/5433", got)
+	}
+}
+
+// TestServiceNameIgnoresNonPortProtocols 端口表只对 TCP/UDP 有意义。
+// ICMP 之类没有端口,拿它的字节当端口去查表会查出莫名其妙的名字。
+func TestServiceNameIgnoresNonPortProtocols(t *testing.T) {
+	for _, proto := range []uint8{1, 47, 58, 132} {
+		if _, ok := serviceName(proto, 443); ok {
+			t.Errorf("协议 %d 不该走端口表", proto)
+		}
+	}
+}
