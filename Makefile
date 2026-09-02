@@ -68,18 +68,29 @@ bpf-verify:
 ## 实例的人照样解压大包,只是无视里面那个 clickhouse、加上
 ## -clickhouse-addr 就行。
 ##
-## clickhouse 按需下载(不入库,200MB 级),CH_URL_* 可覆盖。
+## clickhouse 按需下载(不入库,200MB 级),CH_VERSION / CH_TGZ_* / CH_URL_*
+## 都可覆盖。
 ##
-## amd64 用官方的 **amd64compat** 构建,不是 amd64。
+## Linux 侧用官方 **定版 tgz**(packages.clickhouse.com/tgz/lts),不再用
+## builds.clickhouse.com/master 的自解压构建。
 ##
-## 理由:默认的 amd64 构建要求 x86-64-v2(SSE4.2/POPCNT),在较老的物理机
-## 与屏蔽了这些指令的虚拟机上一执行就被内核 SIGILL 掉,表现为
-## "Illegal instruction (core dumped)"。用最激进的构建去打一个
-## "拷过去就跑"的包,本身就与那个承诺矛盾——而用户拿到的错误信息完全
-## 指不到"换个 clickhouse 构建"这个方向。amd64compat 是纯 SSE2 构建,
-## 牺牲一点性能换普遍可运行,对单机部署这是正确的取舍。
-CH_URL_LINUX_AMD64  ?= https://builds.clickhouse.com/master/amd64compat/clickhouse
-CH_URL_LINUX_ARM64  ?= https://builds.clickhouse.com/master/aarch64/clickhouse
+## 理由是 glibc 门槛。master 的自解压外壳只要 glibc 2.16,所以它在很老的
+## 机器上能启动、能把 800MB 解开(顺手覆盖掉包里原来那个小文件),然后才
+## 报 `version GLIBC_2.25 not found` 失败 —— 用户看到的是一个已经把自己
+## 撑大到 800MB 的文件加一句看不懂的错。定版 tgz 里的二进制只要 glibc
+## 2.4,实测 23.8/24.8/25.8/26.3 全线如此。
+##
+## 代价是定版渠道没有 amd64compat(404),所以 amd64 包重新要求 SSE4.2
+## (x86-64-v2),arm64 要求 ARMv8.2。这两条已写进 README 与
+## packaging/README-linux.txt,并且启动失败时 startupHint 会指出来。
+## 老机器与屏蔽指令的虚拟机走 -clickhouse-addr 接外部实例。
+##
+## macOS 没有定版资产(GitHub release 里也没有,按版本号猜 builds 路径
+## 一律 403),继续用 master 的自解压构建。
+CH_VERSION      ?= 26.3.24.4
+CH_TGZ_BASE     ?= https://packages.clickhouse.com/tgz/lts
+CH_TGZ_LINUX_AMD64 ?= $(CH_TGZ_BASE)/clickhouse-common-static-$(CH_VERSION)-amd64.tgz
+CH_TGZ_LINUX_ARM64 ?= $(CH_TGZ_BASE)/clickhouse-common-static-$(CH_VERSION)-arm64.tgz
 CH_URL_DARWIN_ARM64 ?= https://builds.clickhouse.com/master/macos-aarch64/clickhouse
 ## Intel Mac 的目录名是 macos,不是 macos-x86_64 —— 后者 403,别照着
 ## aarch64 那个命名去猜。
@@ -110,16 +121,17 @@ release: check
 ## 失败,而那个错误很难让人想到是打包错了。打完包 verify-packages 会用
 ## file(1) 复核每个包里两个二进制的架构,别跳过。
 ##
-## gzip 用 -1:clickhouse 那个自解压二进制本身已经是压缩数据,更高的级别
-## 只是白烧 CPU,换不到几 MB。
+## gzip 级别按目标分。macOS 那个自解压二进制本身已经是压缩数据,-1 之上
+## 只是白烧 CPU;Linux 换成定版 tgz 之后包里是 796MB 的裸二进制,实测
+## -1 出 252MB/17s、-6 出 224MB/30s,那 28MB 值得多花十几秒。
 PKG_TARGETS := linux-amd64 linux-arm64 darwin-arm64 darwin-amd64
 
 package: release
 	@set -e; rm -rf dist/pkg; mkdir -p dist/pkg; \
 	for t in $(PKG_TARGETS); do \
 	  case $$t in \
-	    linux-amd64)  url="$(CH_URL_LINUX_AMD64)";; \
-	    linux-arm64)  url="$(CH_URL_LINUX_ARM64)";; \
+	    linux-amd64)  url="$(CH_TGZ_LINUX_AMD64)";; \
+	    linux-arm64)  url="$(CH_TGZ_LINUX_ARM64)";; \
 	    darwin-arm64) url="$(CH_URL_DARWIN_ARM64)";; \
 	    darwin-amd64) url="$(CH_URL_DARWIN_AMD64)";; \
 	    *) echo "未知打包目标 $$t"; exit 1;; \
@@ -131,9 +143,20 @@ package: release
 	    *)        cp packaging/README-linux.txt  $$d/README.txt;; \
 	  esac; \
 	  echo ">> 下载 $$t 版 clickhouse"; \
-	  curl -fSL --retry 3 -o $$d/clickhouse "$$url" || { echo "下载失败: $$url"; exit 1; }; \
+	  case $$t in \
+	    linux-*) \
+	      curl -fSL --retry 3 -o $$d/ch.tgz "$$url" || { echo "下载失败: $$url"; exit 1; }; \
+	      curl -fSL --retry 3 -o $$d/ch.tgz.sha512 "$$url.sha512" || { echo "下载失败: $$url.sha512"; exit 1; }; \
+	      ( cd $$d && sed "s|  .*|  ch.tgz|" ch.tgz.sha512 | sha512sum -c - ) || { echo "$$t 的 clickhouse tgz 校验不过"; exit 1; }; \
+	      tar xzf $$d/ch.tgz -C $$d --strip-components=3 \
+	        clickhouse-common-static-$(CH_VERSION)/usr/bin/clickhouse; \
+	      rm -f $$d/ch.tgz $$d/ch.tgz.sha512;; \
+	    *) \
+	      curl -fSL --retry 3 -o $$d/clickhouse "$$url" || { echo "下载失败: $$url"; exit 1; };; \
+	  esac; \
 	  chmod +x $$d/clickhouse; \
-	  tar --use-compress-program='gzip -1' -cf dist/$$name.tar.gz -C dist/pkg $$name; \
+	  case $$t in linux-*) gzlevel=6;; *) gzlevel=1;; esac; \
+	  tar --use-compress-program="gzip -$$gzlevel" -cf dist/$$name.tar.gz -C dist/pkg $$name; \
 	  rm -rf $$d; \
 	  echo ">> $$name.tar.gz $$(du -h dist/$$name.tar.gz | cut -f1)"; \
 	done; \
