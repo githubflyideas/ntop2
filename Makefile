@@ -20,7 +20,32 @@ BPF_OBJ := internal/datasource/obj/sampler.o
 BPF_ARCH_INC := /usr/include/$(shell uname -m)-linux-gnu
 BPF_CFLAGS := -O2 -g -target bpf -D__TARGET_ARCH_x86 -Wall -Werror -I$(BPF_ARCH_INC)
 
-.PHONY: build test check fmt vet bpf bpf-verify release package verify-packages clean
+.PHONY: build test check fmt vet bpf bpf-verify go-version release package verify-packages clean
+
+## go-version: 拦住 Go >= 1.24 编译发行二进制。
+##
+## Go 1.23 生成的 Linux 二进制能在内核 2.6.32 上跑,Go 1.24 起最低要 3.2。
+## 这不是编译期错误,也不是运行时的清晰报错 —— 换个工具链重新编译一次,
+## 出来的包在 CentOS/RHEL 6 那类机器上直接 "FATAL: kernel too old",而
+## 二进制本身看不出任何区别。有人正是在这种机器上用 -clickhouse-addr 接
+## 外部 ClickHouse(内嵌那份 ClickHouse 也过不了 3.2 这道门槛)。
+##
+## 为什么不写在 go.mod 里:go.mod 的 go 指令是下限不是上限,toolchain 指令
+## 只会让 Go 往上切换、不会往下限制。这道门只能立在构建脚本上。
+##
+## 明知故犯时:make release ALLOW_NEW_GO=1
+go-version:
+	@v=$$($(GO) env GOVERSION); \
+	  minor=$$(echo "$$v" | sed -n 's/^go1\.\([0-9]*\).*/\1/p'); \
+	  if [ -z "$$minor" ]; then \
+	    echo "警告:认不出 Go 版本 $$v,跳过内核门槛检查"; \
+	  elif [ "$$minor" -ge 24 ] && [ -z "$$ALLOW_NEW_GO" ]; then \
+	    echo "$$v 生成的二进制最低要 Linux 内核 3.2,而本项目要支持 2.6.32。"; \
+	    echo "用 Go 1.23.x 编译发行包,或者确认不再支持老内核后加 ALLOW_NEW_GO=1。"; \
+	    exit 1; \
+	  else \
+	    echo "Go 版本 $$v,内核门槛检查通过"; \
+	  fi
 
 build:
 	CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS)" -o ntop2ban ./cmd/ntop2ban
@@ -99,7 +124,7 @@ CH_URL_DARWIN_AMD64 ?= https://builds.clickhouse.com/master/macos/clickhouse
 ## darwin 产物与 Linux 产物功能对等:v0.5.0 起 macOS 上的 -input local
 ## 走 /dev/bpf,本机抓包是支持的。缺的只有 XDP(那是 Linux 内核接口),
 ## 表现为 Mac 上只有一级采集层可用。
-release: check
+release: go-version check
 	mkdir -p dist
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/ntop2ban-linux-amd64 ./cmd/ntop2ban
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/ntop2ban-linux-arm64 ./cmd/ntop2ban
