@@ -106,6 +106,9 @@ func NewNetFlowSource(cfg NetFlowConfig) (*NetFlowSource, error) {
 
 func (s *NetFlowSource) Name() string { return "netflow-v5" }
 
+// Source 实现 Reporter。
+func (s *NetFlowSource) Source() string { return string(flow.SourceNetFlow) }
+
 // Arrival 实现 Reporter。
 func (s *NetFlowSource) Arrival() Arrival { return s.arr.snapshot() }
 

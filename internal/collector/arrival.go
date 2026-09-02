@@ -38,6 +38,14 @@ type Arrival struct {
 // 不该被迫实现一个对它没意义的方法。
 type Reporter interface {
 	Name() string
+	// Source 返回这个输入源在 flow 里的来源枚举值。
+	//
+	// 界面上要把"收到多少个包"和"产出多少条记录"并排放,而这两个数来自
+	// 两套不同的计数:包数按输入源实例算,记录数按 flow.SourceType 算。
+	// 没有这个方法就只能靠名字去猜哪两行是同一个源 —— 名字是给人看的
+	// ("netflow-v5"),枚举是给机器对齐的("NETFLOW"),猜出来的结果是
+	// 同一个输入源在表里出现两行。
+	Source() string
 	Arrival() Arrival
 }
 

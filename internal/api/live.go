@@ -69,15 +69,16 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request, _ string) {
 // 结论那一段直接读这个结构而不是读已经拼好的 JSON map:从 map[string]any
 // 里断言类型取值,改一个键名编译器不会说话,而错的结果长得像对的。
 type namedArrival struct {
-	Name string
-	A    collector.Arrival
+	Name   string
+	Source string
+	A      collector.Arrival
 }
 
 // arrivals 收集所有远端输入源的到达情况。
 func (s *Server) arrivals() []namedArrival {
 	out := make([]namedArrival, 0, len(s.reporters))
 	for _, rp := range s.reporters {
-		out = append(out, namedArrival{Name: rp.Name(), A: rp.Arrival()})
+		out = append(out, namedArrival{Name: rp.Name(), Source: rp.Source(), A: rp.Arrival()})
 	}
 	return out
 }
@@ -90,6 +91,9 @@ func arrivalJSON(list []namedArrival) []map[string]any {
 		a := na.A
 		m := map[string]any{"name": na.Name, "packets": a.Packets,
 			"bad": a.Bad, "records": a.Records}
+		if na.Source != "" {
+			m["source"] = na.Source
+		}
 		if !a.Last.IsZero() {
 			m["last"] = a.Last
 			m["last_from"] = a.LastFrom

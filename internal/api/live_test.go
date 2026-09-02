@@ -243,3 +243,19 @@ func TestHandleResolveRejectsGET(t *testing.T) {
 		t.Errorf("code = %d", rec.Code)
 	}
 }
+
+// 界面靠 source 把"收到多少包"和"产出多少条记录"对齐。名字("netflow-v5")
+// 是给人看的,枚举("NETFLOW")才是能对齐的那个键 —— 少了它,同一个输入源
+// 会在表里出现两行,一行有包数没记录数,另一行反过来。
+func TestArrivalJSONCarriesSourceKey(t *testing.T) {
+	out := arrivalJSON([]namedArrival{{Name: "netflow-v5", Source: "NETFLOW"}})
+	if out[0]["source"] != "NETFLOW" {
+		t.Errorf("source = %v", out[0]["source"])
+	}
+	// 没有来源枚举的上报者(比如以后的本机采集)不该凭空多一个空键:
+	// 前端拿到空字符串会拿它去查对齐表,匹配上第一个同样没有来源的行。
+	out = arrivalJSON([]namedArrival{{Name: "x"}})
+	if _, ok := out[0]["source"]; ok {
+		t.Errorf("空来源不该出现在 JSON 里:%v", out[0])
+	}
+}

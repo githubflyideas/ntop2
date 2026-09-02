@@ -107,6 +107,9 @@ func NewSFlowSource(cfg SFlowConfig) (*SFlowSource, error) {
 
 func (s *SFlowSource) Name() string { return "sflow-v5" }
 
+// Source 实现 Reporter。
+func (s *SFlowSource) Source() string { return string(flow.SourceSFlow) }
+
 // Arrival 实现 Reporter。
 func (s *SFlowSource) Arrival() Arrival { return s.arr.snapshot() }
 
