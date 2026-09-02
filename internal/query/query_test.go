@@ -454,19 +454,18 @@ func TestCompileNotInIPList(t *testing.T) {
 	}
 }
 
-// TestCompileDetailRows 没有分组也没有时间桶时返回明细行(Flow Detail /
-// 下钻到最后一层)。
+// TestCompileDetailRows mode=detail 返回明细行(Flow Detail / 下钻到
+// 最后一层)。
 func TestCompileDetailRows(t *testing.T) {
 	q := baseQuery()
-	q.Metrics = []string{} // 显式清空,Validate 会填回默认值
+	q.Mode = ModeDetail
+	q.GroupBy = nil
+	q.Metrics = nil
+	q.Interval = ""
 	q.Filters = Condition{Field: "src_ip", Operator: OpEq, Value: "203.0.113.7"}
 	if err := q.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	// Validate 填了默认指标,所以这里是聚合查询;要拿明细必须显式指定
-	q.Metrics = nil
-	q.GroupBy = nil
-	q.Interval = ""
 	c, err := Compile(q)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
@@ -670,5 +669,135 @@ func TestNotCIDROnlyOnIPFields(t *testing.T) {
 		if err := q.Validate(); err == nil {
 			t.Errorf("字段 %q 不该接受 not_cidr", f)
 		}
+	}
+}
+
+// TestDetailModeIsReachable 这是加 mode 的全部理由:在它之前
+// compileDetail 写好了却没有任何请求能到达 —— Validate 会给空 Metrics
+// 补上默认指标,于是"两个都空就算明细"这条路永远不成立。
+func TestDetailModeIsReachable(t *testing.T) {
+	q := baseQuery()
+	q.Mode = ModeDetail
+	q.GroupBy = nil
+	q.Metrics = nil
+	q.Interval = ""
+	if err := q.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(q.Metrics) != 0 {
+		t.Fatalf("明细模式不该被补上默认指标,得到 %v", q.Metrics)
+	}
+	c, err := Compile(q)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if c.Table != "flows" {
+		t.Errorf("明细只能查 flows,得到 %q", c.Table)
+	}
+	if !strings.Contains(c.SQL, "toUnixTimestamp(timestamp) AS ts") {
+		t.Errorf("不是明细 SQL:\n%s", c.SQL)
+	}
+}
+
+// TestDetailModeForcesDetailTable 跨度大的查询在聚合模式下会被 planTable
+// 送去 flows_1m。明细模式必须无视这条规则,否则 compileDetail 会以
+// "明细查询只能在 flows 表上进行" 失败 —— 而用户只是选了最近 30 天。
+func TestDetailModeForcesDetailTable(t *testing.T) {
+	q := baseQuery()
+	q.Mode = ModeDetail
+	q.GroupBy = nil
+	q.Metrics = nil
+	q.Interval = ""
+	q.TimeRange = TimeRange{From: time.Now().Add(-30 * 24 * time.Hour), To: time.Now()}
+	if err := q.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	c, err := Compile(q)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if c.Table != "flows" {
+		t.Errorf("明细模式跨度再大也只能查 flows,得到 %q", c.Table)
+	}
+}
+
+// TestDetailModeRejectsAggregateFields 明细与聚合是互斥的两条路。静默
+// 忽略 group_by 会让人以为"我明明选了按应用分组"却拿到一堆原始流。
+func TestDetailModeRejectsAggregateFields(t *testing.T) {
+	cases := []struct {
+		name string
+		tune func(*Query)
+	}{
+		{"group_by", func(q *Query) { q.GroupBy = []string{"src_ip"} }},
+		{"metrics", func(q *Query) { q.Metrics = []string{"bytes"} }},
+		{"interval", func(q *Query) { q.Interval = "hour" }},
+		{"table", func(q *Query) { q.Table = "flows_1m" }},
+	}
+	for _, c := range cases {
+		q := baseQuery()
+		q.Mode = ModeDetail
+		q.GroupBy, q.Metrics, q.Interval = nil, nil, ""
+		c.tune(&q)
+		if err := q.Validate(); err == nil {
+			t.Errorf("明细模式 + %s 应该报错", c.name)
+		}
+	}
+}
+
+// TestDetailModeSort 明细可以按几个真会用的列排序:按时间看最近、
+// 按字节看最大的几条、按时长看长连接。
+func TestDetailModeSort(t *testing.T) {
+	detail := func() Query {
+		q := baseQuery()
+		q.Mode = ModeDetail
+		q.GroupBy, q.Metrics, q.Interval = nil, nil, ""
+		return q
+	}
+
+	q := detail()
+	if err := q.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if q.Sort.Field != "ts" || !q.Sort.Desc {
+		t.Errorf("默认排序应是 ts DESC,得到 %+v", q.Sort)
+	}
+	c, _ := Compile(q)
+	if !strings.Contains(c.SQL, "ORDER BY timestamp DESC") {
+		t.Errorf("默认应按时间倒序:\n%s", c.SQL)
+	}
+
+	q = detail()
+	q.Sort = Sort{Field: "bytes", Desc: true}
+	if err := q.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	c, _ = Compile(q)
+	if !strings.Contains(c.SQL, "ORDER BY bytes DESC") {
+		t.Errorf("按字节排序没生效:\n%s", c.SQL)
+	}
+
+	q = detail()
+	q.Sort = Sort{Field: "duration_ms", Desc: false}
+	if err := q.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	c, _ = Compile(q)
+	if !strings.Contains(c.SQL, "ORDER BY duration_ms ASC") {
+		t.Errorf("升序没生效:\n%s", c.SQL)
+	}
+
+	q = detail()
+	q.Sort = Sort{Field: "src_org"}
+	if err := q.Validate(); err == nil {
+		t.Error("明细不该允许按 src_org 排序")
+	}
+}
+
+// TestUnknownModeRejected 拼错的 mode 不能被当成聚合悄悄放过。
+func TestUnknownModeRejected(t *testing.T) {
+	q := baseQuery()
+	q.Mode = "details"
+	if err := q.Validate(); err == nil {
+		t.Error("mode=details 应该报错")
 	}
 }

@@ -13,6 +13,7 @@ package query
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -93,9 +94,48 @@ type Query struct {
 	Sort  Sort `json:"sort,omitempty"`
 	Limit int  `json:"limit,omitempty"`
 
+	// Mode 决定返回什么形状的结果。
+	//
+	// 空是聚合(按 GroupBy/Interval 分组求指标),"detail" 是明细行。
+	// 为什么需要一个显式的开关而不是"GroupBy 与 Metrics 都为空就算明细":
+	// Validate 会给空 Metrics 补上 bytes/packets/flows 的默认值,那是对的
+	// —— 大多数调用方只是懒得写指标,不是想看明细。两者靠"都没填"来区分
+	// 的话,明细这条路永远走不到(它在 2026-09 之前就是这样,compileDetail
+	// 写好了却没有任何请求能到达它)。
+	Mode string `json:"mode,omitempty"`
+
 	// Table 指定查哪张表。为空时由 planner 按 Interval 与时间跨度自动
 	// 选择 flows 或 flows_1m —— 让调用方不必理解分层存储。
 	Table string `json:"table,omitempty"`
+}
+
+// Mode 的取值。
+const (
+	ModeAggregate = ""
+	ModeDetail    = "detail"
+)
+
+// detailSortColumns 明细模式允许的排序字段 → 实际列名。
+//
+// 不放开全部明细列:按 src_org 这种低基数字符串列排序没有分析意义,
+// 却要 ClickHouse 多读一整列。这几个是真会用的 —— 按时间看最近、
+// 按字节看最大的几条、按时长看长连接。
+var detailSortColumns = map[string]string{
+	"ts":          "timestamp",
+	"bytes":       "bytes",
+	"packets":     "packets",
+	"duration_ms": "duration_ms",
+	"src_port":    "src_port",
+	"dst_port":    "dst_port",
+}
+
+func detailSortNames() []string {
+	out := make([]string, 0, len(detailSortColumns))
+	for k := range detailSortColumns {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Sort 排序。
@@ -147,6 +187,33 @@ func (q *Query) Validate() error {
 	}
 	if q.Limit > MaxLimit {
 		return fmt.Errorf("limit %d 超过上限 %d", q.Limit, MaxLimit)
+	}
+
+	// 明细模式与聚合模式是两条互斥的路:填了分组维度、指标或时间粒度
+	// 又说要明细,说明调用方对自己要什么还没想清楚。静默忽略那几个字段
+	// 会让人以为"我明明选了按应用分组"却拿到一堆原始流,所以这里报错。
+	if q.Mode == ModeDetail {
+		switch {
+		case len(q.GroupBy) > 0:
+			return fmt.Errorf("明细模式不能同时指定分组维度(group_by);要按维度聚合请去掉 mode=detail")
+		case len(q.Metrics) > 0:
+			return fmt.Errorf("明细模式不能同时指定指标(metrics):明细行返回的是每条流的原始字段,不做聚合")
+		case q.Interval != "":
+			return fmt.Errorf("明细模式不能同时指定时间粒度(interval):时间粒度是给聚合出来的时间序列用的")
+		case q.Table != "" && q.Table != "flows":
+			return fmt.Errorf("明细只存在于 flows 表,不能指定 table=%q", q.Table)
+		}
+		if q.Sort.Field == "" {
+			// 看最近发生了什么是主要意图。
+			q.Sort = Sort{Field: "ts", Desc: true}
+		} else if _, ok := detailSortColumns[q.Sort.Field]; !ok {
+			return fmt.Errorf("明细模式不支持按 %q 排序(可用:%s)",
+				q.Sort.Field, strings.Join(detailSortNames(), ", "))
+		}
+		return validateCondition(q.Filters, 0)
+	}
+	if q.Mode != ModeAggregate {
+		return fmt.Errorf("不支持的 mode %q(留空是聚合,%q 是明细行)", q.Mode, ModeDetail)
 	}
 
 	for _, g := range q.GroupBy {

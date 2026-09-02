@@ -34,6 +34,10 @@ func Compile(q Query) (Compiled, error) {
 		tsCol = "ts_minute"
 	}
 
+	if q.Mode == ModeDetail {
+		return compileDetail(q, table, tsCol)
+	}
+
 	var (
 		sel     []string
 		cols    []string
@@ -180,8 +184,18 @@ WHERE timestamp >= ? AND timestamp < ?`
 		sel += " AND " + where
 		args = append(args, wargs...)
 	}
-	// 明细默认按时间倒序:看最近发生了什么是主要意图。
-	sel += "\nORDER BY timestamp DESC\nLIMIT " + strconv.Itoa(q.Limit)
+	// 排序字段由 Validate 限定在 detailSortColumns 里,默认 ts DESC ——
+	// 看最近发生了什么是主要意图。这里再兜一次默认值是因为 Compile 也被
+	// 测试直接调用,不能假定 Sort 一定填过。
+	col, ok := detailSortColumns[q.Sort.Field]
+	if !ok {
+		col = "timestamp"
+	}
+	dir := "DESC"
+	if q.Sort.Field != "" && !q.Sort.Desc {
+		dir = "ASC"
+	}
+	sel += "\nORDER BY " + col + " " + dir + "\nLIMIT " + strconv.Itoa(q.Limit)
 
 	return Compiled{SQL: sel, Args: args, Table: table, Columns: cols}, nil
 }
@@ -195,6 +209,12 @@ WHERE timestamp >= ? AND timestamp < ?`
 // 让调用方不必理解分层存储是刻意的:界面上用户只选"最近 7 天",
 // 不该还要懂"7 天该查哪张表"。
 func planTable(q Query) string {
+	// 明细只存在于 flows。聚合表里一行是一个分钟桶的汇总,那里没有
+	// "一条流"这个概念。
+	if q.Mode == ModeDetail {
+		return "flows"
+	}
+
 	span := q.TimeRange.To.Sub(q.TimeRange.From)
 
 	// 聚合表答不上来就没得选,先排除。界面上用户选的是"按目的端口看
