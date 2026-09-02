@@ -83,6 +83,7 @@ tr:last-child td{border-bottom:0}
 tbody tr:hover td{background:rgba(61,126,255,.06)}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13.5px}
 .num{text-align:right;font-variant-numeric:tabular-nums}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
 .drill{color:var(--blue);cursor:pointer}
 .drill:hover{text-decoration:underline}
 
@@ -153,6 +154,17 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
 .fnd .t{font-weight:600;font-size:14.5px}
 .fnd .d{font-size:13.5px;color:var(--dim);margin-top:3px;line-height:1.55;
  white-space:pre-wrap}
+/* 反查出来的域名跟在 IP 后面而不是替换它 —— IP 才是能用来过滤、下钻、
+   跟别的工具对照的那个标识,域名只是帮人认出这是哪台机器。 */
+.dns{font-size:13px;color:var(--dim2);margin-left:6px}
+.lv{font-size:13.5px}
+.lv td{padding:4px 8px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.lv td.tm{color:var(--dim2)}
+.lv tr.fresh{animation:flash 1.2s ease-out}
+@keyframes flash{from{background:rgba(88,166,255,.16)}to{background:transparent}}
+.livebar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+ font-size:13.5px;color:var(--dim);margin:0 0 11px}
+.livebar label{display:flex;align-items:center;gap:5px;cursor:pointer}
 .src{border:1px solid var(--line);border-radius:7px;padding:11px 13px;margin-bottom:8px}
 .src .top{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .src .nm{font-weight:600;font-size:14.5px}
@@ -177,6 +189,7 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
   <button data-t="conv">Conversations</button>
   <button data-t="geo">ASN / Country</button>
   <button data-t="explore">Explorer</button>
+  <button data-t="live">实时</button>
   <button data-t="settings">设置</button>
 </nav>
 <main>
@@ -323,6 +336,28 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
         下次加载看的是加载那一刻的最新数据(选了自定义区间的除外)</p>
       <div id="e-sql"></div>
       <div id="e-out" style="margin-top:12px"></div>
+    </div>
+  </section>
+
+  <section id="s-live">
+    <div class="panel wide">
+      <h2>包进来了吗</h2>
+      <p class="hint">这一页读的是进程内存里刚收到的那几百条,不查 ClickHouse ——
+        所以它有数、Explorer 没数,说明采集是好的、写库出了问题</p>
+      <div id="live-findings"></div>
+    </div>
+    <div class="panel wide">
+      <h2>输入源</h2>
+      <div id="live-inputs"></div>
+    </div>
+    <div class="panel wide">
+      <h2>最新记录</h2>
+      <div class="livebar">
+        <label><input type="checkbox" id="live-auto" checked>自动刷新(2 秒)</label>
+        <span id="live-dns"></span>
+        <span id="live-tick"></span>
+      </div>
+      <div id="live-rows"></div>
     </div>
   </section>
 
@@ -566,6 +601,58 @@ async function topTable(el, groupBy, opts){
   el.innerHTML = h+'</tbody></table>';
   el.querySelectorAll('[data-drill]').forEach(n=>n.onclick=()=>drillTo(n.dataset.drill, n.dataset.val));
   el.querySelectorAll('[data-filter]').forEach(n=>n.onclick=()=>addFilter(n.dataset.filter, n.dataset.val));
+  // 反查是"表格已经画出来之后再补一行小字",不能挡在渲染前面:上游 DNS
+  // 不响应时那两秒的超时会变成整页空白。国家、ASN 这类维度不反查,
+  // 所以由调用方显式打开而不是看着像 IP 就查。
+  if(opts.resolve) annotateNames(el, d.rows.map(r=>String(r[0])));
+}
+
+// --- IP 反查域名 ---
+//
+// 只查"这一屏正在显示的地址",而且结果全存在这个 map 里:同一个地址在
+// 页面存活期间只问服务端一次。服务端那边还有 300 秒的缓存,所以就算刷新
+// 页面也不会真的打到上游。null 是占位符,表示"已经发出请求还没回来" ——
+// 没有它,一次渲染里出现 20 次同一个地址就会发 20 个请求。
+const DNS = {enabled:false, names:{}};
+
+function dnsTag(ip){
+  const n = DNS.names[ip];
+  return n ? '<span class="dns">'+esc(n)+'</span>' : '';
+}
+
+async function resolveNames(ips){
+  if(!DNS.enabled) return false;
+  const need = [];
+  for(const ip of ips){
+    if(!ip || DNS.names[ip]!==undefined) continue;
+    if(need.indexOf(ip)<0) need.push(ip);
+  }
+  if(!need.length) return false;
+  const batch = need.slice(0,200);
+  batch.forEach(ip=>{ DNS.names[ip]=null; });
+  let d;
+  try { d = await api('/api/v1/resolve', {ips:batch}); }
+  catch(e){ batch.forEach(ip=>{ delete DNS.names[ip]; }); return false; }
+  // 服务端说没开启就别再问了:每一屏都试一次只是白跑一趟往返。
+  if(!d || !d.enabled){ DNS.enabled=false; batch.forEach(ip=>{ delete DNS.names[ip]; }); return false; }
+  // 查不到域名的地址要记成空字符串而不是删掉 —— 公网地址大多没有 PTR,
+  // 删掉就等于每次滚动都重新问一遍那一堆查不到的。
+  batch.forEach(ip=>{ DNS.names[ip] = (d.names && d.names[ip]) || ''; });
+  return true;
+}
+
+// annotateNames 把域名补到已经渲染好的表格里,而不是重画一遍:重画会
+// 把用户刚才的滚动位置和展开的下钻面板一起冲掉。
+async function annotateNames(el, ips){
+  await resolveNames(ips);
+  // 不看 resolveNames 的返回值:一屏地址全都查过时它返回 false,而那正是
+  // 域名都在手上、最该贴出来的时候。第一版在这里 return 了,于是切到 Hosts
+  // 页永远看不到域名 —— 那些地址刚在实时页查过了。
+  el.querySelectorAll('[data-val]').forEach(n=>{
+    if(n.querySelector('.dns')) return;
+    const nm = DNS.names[n.dataset.val];
+    if(nm) n.insertAdjacentHTML('beforeend', dnsTag(n.dataset.val));
+  });
 }
 
 // --- ECharts 基础 ---
@@ -866,6 +953,10 @@ async function loadOverview(){
     + '</tbody></table>';
 
   renderCapture(d.capture);
+  // 反查开没开是启动参数决定的,页面自己猜不出来。overview 每 30 秒回来
+  // 一次,所以这个开关跟着服务端走,不会停在一个过期的判断上。
+  DNS.enabled = !!(d.dns && d.dns.enabled);
+  renderDNSStatus(d.dns);
 
   // 没有 mmdb 时城市视图给出原因,而不是显示一张空表 ——
   // 空表让人以为程序坏了。
@@ -884,16 +975,7 @@ function row(k,v){ return '<tr><td style="color:var(--dim)">'+k+'</td><td>'+v+'<
 // 判断逻辑在 Go 的 datasource.Explain 里,那边有单元测试盯着,
 // 搬到这里就只能靠肉眼看截图了。
 function renderCapture(c){
-  const box = $('#set-capture');
-  if(!box) return;
-  c = c || {};
-  const fs = c.findings || [];
-  if(!fs.length){ box.innerHTML = '<p class="hint">没有自检信息。</p>'; return; }
-  let h = fs.map(f =>
-    '<div class="fnd l-'+esc(f.level||'info')+'">'
-    + '<div class="t">'+esc(f.title)+'</div>'
-    + '<div class="d">'+esc(f.detail)+'</div></div>').join('');
-  box.innerHTML = h;
+  renderFindings($('#set-capture'), (c||{}).findings);
 }
 
 async function loadKPI(){
@@ -934,8 +1016,8 @@ async function loadDash(){
 async function loadHosts(){
   showErr('');
   await Promise.all([
-    topTable($('#h-src'),'src_ip',{limit:20,drill:'src_ip'}),
-    topTable($('#h-dst'),'dst_ip',{limit:20,drill:'dst_ip'}),
+    topTable($('#h-src'),'src_ip',{limit:20,drill:'src_ip',resolve:true}),
+    topTable($('#h-dst'),'dst_ip',{limit:20,drill:'dst_ip',resolve:true}),
   ]);
 }
 
@@ -1542,6 +1624,193 @@ function localInput(iso){
     +'T'+p(d.getHours())+':'+p(d.getMinutes());
 }
 
+// --- 实时页 ---
+//
+// 这一页只有一个用途:回答"现在有包进来吗"。所以它不查 ClickHouse、不受
+// 顶上的时间范围影响,数据全部来自 /api/v1/live 读的进程内存。
+//
+// cursor 是单调递增的序号,每次只取比上次大的那些记录,拼在本地列表前面。
+// 前端保留 300 行就够看了 —— 再多也不会有人往下翻,而 DOM 行数是这一页
+// 每两秒重画一次的主要开销。
+const LIVE = {cursor:0, rows:[], timer:null, max:300};
+
+function renderDNSStatus(dns){
+  const el = $('#live-dns');
+  if(!el) return;
+  if(!dns || !dns.enabled){
+    el.innerHTML = '域名反查未开启 —— 启动时加 <code>-dns-resolve</code> 可以在 IP 后面显示域名';
+    return;
+  }
+  el.textContent = '域名反查已开启 · 缓存 ' + fmtNum(dns.entries||0) + ' 条 · 命中 '
+    + fmtNum(dns.hits||0) + ' 次 · 问过上游 ' + fmtNum(dns.upstream||0) + ' 次';
+}
+
+async function loadLive(){
+  showErr('');
+  // 切过来先从零开始要一批:上一次留下的 cursor 对应的记录很可能已经被
+  // 环形缓冲覆盖掉了,那样第一屏会是空的,而这一页空着就是它要报告的故障
+  // 长得一样,分不清。
+  LIVE.cursor = 0; LIVE.rows = [];
+  await pollLive();
+  if(!LIVE.timer) LIVE.timer = setInterval(tickLive, 2000);
+}
+
+async function tickLive(){
+  // 离开这一页就停下来:每两秒一次的轮询在别的页面上只是白耗电,
+  // 而定时器挂在 window 上,不主动停就一直跑到刷新页面为止。
+  if(current()!=='live'){ clearInterval(LIVE.timer); LIVE.timer=null; return; }
+  if(!$('#live-auto').checked) return;
+  try { await pollLive(); } catch(e){ /* 一次轮询失败不值得打断整页 */ }
+}
+
+async function pollLive(){
+  const d = await api('/api/v1/live?seq=' + LIVE.cursor + '&limit=100');
+  if(!d) return;
+  renderFindings($('#live-findings'), d.findings);
+  renderLiveInputs(d);
+  renderDNSStatus(d.dns);
+  DNS.enabled = !!(d.dns && d.dns.enabled);
+
+  const fresh = d.rows || [];
+  if(d.cursor) LIVE.cursor = d.cursor;
+  if(fresh.length){
+    // 服务端给的是新到旧,直接接在前面就是整列按时间倒序。
+    fresh.forEach(r=>{ r._new = true; });
+    LIVE.rows.forEach(r=>{ r._new = false; });
+    LIVE.rows = fresh.concat(LIVE.rows).slice(0, LIVE.max);
+  }
+  renderLiveRows();
+  $('#live-tick').textContent = '更新于 ' + new Date().toLocaleTimeString();
+  // 每次都补一遍域名,不只在有新记录时补:一台闲着的机器上行不再变化,
+  // 而上一轮发出去的反查这时候才回来,那时不贴就永远不贴了。
+  annotateLiveNames();
+}
+
+// renderFindings 与设置页的 renderCapture 是同一套排版,抽出来共用:
+// level 与措辞都是服务端算的,这里只负责上色和保留换行。
+function renderFindings(box, fs){
+  if(!box) return;
+  fs = fs || [];
+  if(!fs.length){ box.innerHTML = '<p class="hint">没有结论。</p>'; return; }
+  box.innerHTML = fs.map(f =>
+    '<div class="fnd l-'+esc(f.level||'info')+'">'
+    + '<div class="t">'+esc(f.title)+'</div>'
+    + '<div class="d">'+esc(f.detail)+'</div></div>').join('');
+}
+
+// renderLiveInputs 把"记录数"和"UDP 包数"并排放。
+//
+// 两个数必须并排:包 120 / 记录 0 是"解码死了",包 0 / 记录 0 才是"没人在
+// 发",只看其中一个数这两种情形完全一样。本机采集没有包计数那一列,因为
+// 它不经过 UDP —— 那一格留空比填个 0 诚实。
+function renderLiveInputs(d){
+  const el = $('#live-inputs');
+  if(!el) return;
+  const ins = d.inputs || [], arr = d.arrivals || [];
+  if(!ins.length && !arr.length){
+    el.innerHTML = '<div class="empty">还没有任何输入源产出过记录</div>'; return;
+  }
+  // 一行 = 一个输入源。记录数来自内存缓冲(按 flow 的来源枚举),包数来自
+  // 收包的那一层(按输入源实例),两边靠 source 对齐 —— 早先按名字对齐时
+  // "NetFlow v5"和"netflow-v5"没认出是同一个,同一个源在表里出现了两行。
+  const rows = [];
+  const bySrc = {};
+  for(const i of ins){
+    const r = {label:i.label||i.source, records:i.records, bytes:i.bytes,
+               last:i.last, packets:null, bad:null};
+    bySrc[i.source] = r; rows.push(r);
+  }
+  for(const a of arr){
+    const r = a.source && bySrc[a.source];
+    if(r){
+      r.packets = a.packets; r.bad = a.bad;
+      if(a.last && (!r.last || a.last > r.last)) r.last = a.last;
+      continue;
+    }
+    // 收到了包却一条记录也没解出来的输入源不会出现在 inputs 里 ——
+    // 而它恰恰是最需要被看见的那一行。
+    rows.push({label:a.name, records:a.records, bytes:null, last:a.last,
+               packets:a.packets, bad:a.bad});
+  }
+  const num = v => v==null ? '—' : fmtNum(v);
+  let h = '<table><thead><tr><th>输入源</th><th class="num">记录</th>'
+        + '<th class="num">字节</th><th class="num">收到包</th>'
+        + '<th class="num">解不开</th><th>最近一条</th></tr></thead><tbody>';
+  for(const r of rows){
+    h += '<tr><td>'+esc(r.label)+'</td>'
+       + '<td class="num">'+num(r.records)+'</td>'
+       + '<td class="num">'+(r.bytes==null?'—':fmtBytes(r.bytes))+'</td>'
+       + '<td class="num">'+num(r.packets)+'</td>'
+       + '<td class="num">'+num(r.bad)+'</td>'
+       + '<td class="tm">'+(r.last?clock(r.last):'—')+'</td></tr>';
+  }
+  el.innerHTML = h + '</tbody></table>';
+}
+
+// clock 只显示到秒。实时页上"哪一天"没有意义 —— 全都是刚刚。
+function clock(iso){
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return '—';
+  const p = n => String(n).padStart(2,'0');
+  return p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
+}
+
+// endpoint 把地址和端口拼成一格,域名跟在后面。端口用 tag 的样式跟 IP
+// 分开,免得 1.2.3.4:443 被读成一串数字。
+function endpoint(ip, port, country){
+  let h = '<span class="mono">'+esc(ip)+'</span>';
+  if(port!=null && port!=='') h += '<span style="color:var(--dim2)">:'+esc(port)+'</span>';
+  if(country) h += ' <span class="tag">'+esc(country)+'</span>';
+  h += '<span class="nm" data-ip="'+esc(ip)+'">'+dnsTag(ip)+'</span>';
+  return h;
+}
+
+function renderLiveRows(){
+  const el = $('#live-rows');
+  if(!el) return;
+  if(!LIVE.rows.length){
+    el.innerHTML = '<div class="empty">内存缓冲里还没有记录 —— 上面的结论说了原因</div>';
+    return;
+  }
+  let h = '<table class="lv"><thead><tr><th>时刻</th><th>源</th><th>目的</th>'
+        + '<th>协议</th><th class="num">字节</th><th class="num">包</th>'
+        + '<th>应用</th><th>来源</th></tr></thead><tbody>';
+  for(const r of LIVE.rows){
+    // 抽样倍率要标出来:1/1024 抽样下的 60KB 其实代表 60MB,不写清楚
+    // 会让人拿这个数去跟别处的实测值对账,然后以为差了三个数量级。
+    const samp = Number(r.sampling)||1;
+    h += '<tr'+(r._new?' class="fresh"':'')+'>'
+       + '<td class="tm">'+clock(r.start)+'</td>'
+       + '<td>'+endpoint(r.src_ip, r.src_port, r.src_country)+'</td>'
+       + '<td>'+endpoint(r.dst_ip, r.dst_port, r.dst_country)+'</td>'
+       + '<td>'+esc(protoLabel(r.proto))+'</td>'
+       + '<td class="num">'+fmtBytes(r.bytes)+(samp>1?' <span class="tag">×'+samp+'</span>':'')+'</td>'
+       + '<td class="num">'+fmtNum(r.packets)+'</td>'
+       + '<td>'+esc(r.app||'—')+'</td>'
+       + '<td class="tm">'+esc(sourceName(r.source))+'</td></tr>';
+  }
+  el.innerHTML = h + '</tbody></table>';
+}
+
+// sourceName 与服务端的 sourceLabel 对应。这一份是给行里那一列用的 ——
+// 每行都带一次完整的中文标签会让接口白传不少字节,而这一页每两秒一次。
+function sourceName(s){
+  return {LOCAL_XDP:'本机', SFLOW:'sFlow', NETFLOW:'NetFlow',
+          IPFIX:'IPFIX', PCAP:'PCAP'}[s] || (s||'—');
+}
+
+// annotateLiveNames 只补域名那一格,不重画整张表:表每两秒本来就会重画
+// 一次,但反查是异步回来的,赶不上那一次的话得能自己贴进去。
+async function annotateLiveNames(){
+  const ips = [];
+  LIVE.rows.forEach(r=>{ ips.push(r.src_ip); ips.push(r.dst_ip); });
+  await resolveNames(ips);
+  document.querySelectorAll('#live-rows .nm').forEach(n=>{
+    if(n.querySelector('.dns')) return;
+    n.innerHTML = dnsTag(n.dataset.ip);
+  });
+}
+
 function current(){ return document.querySelector('nav button.on').dataset.t; }
 
 // chrome 控制全局工具条的可见性。
@@ -1551,21 +1820,23 @@ function current(){ return document.querySelector('nav button.on').dataset.t; }
 // 反应,试一次没反应就得自己推断"这里不生效"。同理,全局过滤标签也不该
 // 在设置页显示。
 function chrome(tab){
-  const settings = tab==='settings';
-  $('#bar').style.display = settings ? 'none' : 'flex';
-  $('#pills').style.display = (settings || !GLOBAL.length) ? 'none' : 'flex';
+  // 实时页和设置页一样不吃时间范围:它显示的是内存里刚到的那几百条,
+  // 把"最近 1 小时"留在上面只会让人以为改了会有反应。
+  const bare = tab==='settings' || tab==='live';
+  $('#bar').style.display = bare ? 'none' : 'flex';
+  $('#pills').style.display = (bare || !GLOBAL.length) ? 'none' : 'flex';
 }
 
 function load(tab){
   chrome(tab);
   // 设置页不看时间范围,自定义区间填错了也不该在这里拦人 —— 用户切过来
   // 很可能就是为了先去改别的东西。
-  if(tab!=='settings'){
+  if(tab!=='settings' && tab!=='live'){
     const err = refreshRange();
     if(err){ showErr(err); return; }
   }
   const f={dash:loadDash,hosts:loadHosts,conv:loadConv,geo:loadGeo,
-           explore:()=>{},
+           explore:()=>{}, live:loadLive,
            settings:async()=>{ await loadOverview(); await loadSources(); await loadExcludes(); }}[tab];
   if(!f) return;
   Promise.resolve(f())
