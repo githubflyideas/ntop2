@@ -645,3 +645,30 @@ func TestCIDRRejectsGarbage(t *testing.T) {
 		}
 	}
 }
+
+// 排除一个网段是最常用的操作之一(把自己的内网从图里去掉),而原来
+// 界面上一个运算符都给不出来:cidr 只能"是",没有"不是"。
+func TestCompileNotCIDR(t *testing.T) {
+	q := baseQuery()
+	q.Filters = Condition{Field: "src_ip", Operator: OpNotCIDR, Value: "10.252.145.0/24"}
+	c, err := Compile(q)
+	if err != nil {
+		t.Fatalf("编译失败: %v", err)
+	}
+	if !strings.Contains(c.SQL, "NOT isIPAddressInRange") {
+		t.Errorf("not_cidr 应当编译成 NOT isIPAddressInRange:\n%s", c.SQL)
+	}
+	if got := c.Args[len(c.Args)-1]; got != "::ffff:10.252.145.0/120" {
+		t.Errorf("not_cidr 也要走映射换算,实际 %v", got)
+	}
+}
+
+func TestNotCIDROnlyOnIPFields(t *testing.T) {
+	for _, f := range []string{"bytes", "src_country", "src_port"} {
+		q := baseQuery()
+		q.Filters = Condition{Field: f, Operator: OpNotCIDR, Value: "10.0.0.0/8"}
+		if err := q.Validate(); err == nil {
+			t.Errorf("字段 %q 不该接受 not_cidr", f)
+		}
+	}
+}

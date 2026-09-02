@@ -42,6 +42,7 @@ const (
 	OpContains Operator = "contains"
 	OpPrefix   Operator = "prefix"
 	OpCIDR     Operator = "cidr"
+	OpNotCIDR  Operator = "not_cidr"
 )
 
 // Condition 是一个叶子条件,或者一个嵌套的逻辑组合。

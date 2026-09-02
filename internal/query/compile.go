@@ -415,14 +415,18 @@ func compileLeaf(c Condition) (string, []any, error) {
 		// LIKE 里的 % 由用户自己写,这是它与 contains 的区别。
 		return fmt.Sprintf("%s LIKE ?", col), []any{fmt.Sprint(c.Value)}, nil
 
-	case OpCIDR:
+	case OpCIDR, OpNotCIDR:
 		// isIPAddressInRange 接受 CIDR 字符串,由 ClickHouse 做前缀比较,
 		// 比在 Go 侧展开成 IP 范围再生成 BETWEEN 更准确(也支持 IPv6)。
 		prefix, err := mappedPrefix(fmt.Sprint(c.Value))
 		if err != nil {
 			return "", nil, err
 		}
-		return fmt.Sprintf("isIPAddressInRange(IPv6NumToString(%s), ?)", col),
+		neg := ""
+		if c.Operator == OpNotCIDR {
+			neg = "NOT "
+		}
+		return fmt.Sprintf("%sisIPAddressInRange(IPv6NumToString(%s), ?)", neg, col),
 			[]any{prefix}, nil
 	}
 

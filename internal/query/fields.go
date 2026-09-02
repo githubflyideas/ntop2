@@ -54,7 +54,8 @@ var (
 	// IP 列支持 cidr 而不支持 like:cidr 能用上 IPv6 列的原生比较,
 	// like 会退化成字符串匹配。
 	ipOps = map[Operator]bool{
-		OpEq: true, OpNe: true, OpIn: true, OpNotIn: true, OpCIDR: true,
+		OpEq: true, OpNe: true, OpIn: true, OpNotIn: true,
+		OpCIDR: true, OpNotCIDR: true,
 	}
 )
 
