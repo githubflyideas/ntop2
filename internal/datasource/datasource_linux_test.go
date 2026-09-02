@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"net"
 	"testing"
+
+	"golang.org/x/net/bpf"
 )
 
 // --- ringbuf 事件解析(XDP 层) ---
@@ -80,5 +82,56 @@ func TestAssembleSampleFilterAcceptsRealisticN(t *testing.T) {
 		if _, err := assembleSampleFilter(n); err != nil {
 			t.Errorf("samplingN=%d 汇编失败: %v", n, err)
 		}
+	}
+}
+
+// 内核 3.16 之前没有 SKF_AD_RANDOM,带抽样的那份 cBPF 程序会被
+// SO_ATTACH_FILTER 以 EINVAL 整个拒掉。那时候要退到用户态抽样,而不是
+// 把整个 af-packet 判为不可用 —— 那等于让 CentOS 6 一类的机器彻底没有
+// 本机采集。这里钉住"不带抽样的那份程序不含 ExtRand",也就是退路一定
+// 挂得上。
+func TestNoSamplingFilterAvoidsExtRand(t *testing.T) {
+	for _, in := range sampleFilterInstructions(1) {
+		if ext, ok := in.(bpf.LoadExtension); ok && ext.Num == bpf.ExtRand {
+			t.Fatalf("samplingN=1 的过滤器里出现了 ExtRand,老内核上退路也会挂不上")
+		}
+	}
+	if _, err := assembleSampleFilter(1); err != nil {
+		t.Fatalf("不带抽样的过滤器汇编失败: %v", err)
+	}
+}
+
+func TestSamplingFilterUsesExtRand(t *testing.T) {
+	found := false
+	for _, in := range sampleFilterInstructions(100) {
+		if ext, ok := in.(bpf.LoadExtension); ok && ext.Num == bpf.ExtRand {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("samplingN=100 应当在内核里抽样(ExtRand),否则包会全部拷到用户态")
+	}
+}
+
+// 退化之后的判定必须真的按 1/N 丢包。全放行等于统计数字被放大 N 倍,
+// 因为 aggregator 仍然按 N 还原。
+func TestUserSamplingKeepsRoughlyOneInN(t *testing.T) {
+	if got := (&afPacketSource{}).keep(); !got {
+		t.Fatalf("userSamplingN 为 0 时不该丢包")
+	}
+	if got := (&afPacketSource{userSamplingN: 1}).keep(); !got {
+		t.Fatalf("userSamplingN 为 1 时不该丢包")
+	}
+	s := &afPacketSource{userSamplingN: 100}
+	kept := 0
+	const total = 100000
+	for i := 0; i < total; i++ {
+		if s.keep() {
+			kept++
+		}
+	}
+	// 期望 1000,给足够宽的区间,只判"确实在抽样"而不是判随机数质量。
+	if kept < total/200 || kept > total/50 {
+		t.Errorf("1/100 抽样在 %d 个包里留下 %d 个,不在合理区间", total, kept)
 	}
 }

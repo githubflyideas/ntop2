@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net"
 	"time"
 
@@ -31,6 +32,10 @@ type afPacketSource struct {
 	agg *aggregator
 	log *log.Logger
 
+	// userSamplingN > 1 表示内核挂不上带抽样的过滤器,抽样退到用户态做。
+	// 0 或 1 都表示不在用户态抽样(内核已经抽过,或者本来就是全量)。
+	userSamplingN int
+
 	flushInterval time.Duration
 }
 
@@ -38,11 +43,6 @@ func openAFPacket(cfg Config, lg *log.Logger) (Source, error) {
 	n := cfg.SamplingN
 	if n < 1 {
 		n = 1
-	}
-
-	prog, err := assembleSampleFilter(n)
-	if err != nil {
-		return nil, &ErrUnavailable{Mode: ModeAFPacket, Reason: err}
 	}
 
 	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(unix.ETH_P_ALL)))
@@ -58,9 +58,20 @@ func openAFPacket(cfg Config, lg *log.Logger) (Source, error) {
 		flushInterval: DefaultFlushInterval,
 	}
 
-	if err := unix.SetsockoptSockFprog(fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, prog); err != nil {
-		s.Close()
-		return nil, &ErrUnavailable{Mode: ModeAFPacket, Reason: fmt.Errorf("挂载 cBPF 过滤器: %w", err)}
+	// 抽样优先在内核做,挂不上就退到用户态,而不是判整个 af-packet 不可用。
+	if err := attachSampleFilter(fd, n); err != nil {
+		if n <= 1 {
+			s.Close()
+			return nil, &ErrUnavailable{Mode: ModeAFPacket,
+				Reason: fmt.Errorf("挂载 cBPF 过滤器: %w", err)}
+		}
+		if err2 := attachSampleFilter(fd, 1); err2 != nil {
+			s.Close()
+			return nil, &ErrUnavailable{Mode: ModeAFPacket,
+				Reason: fmt.Errorf("挂载 cBPF 过滤器: %w", err2)}
+		}
+		s.userSamplingN = n
+		lg.Printf("af-packet: 内核不支持带抽样的过滤器(%v),1/%d 抽样改在用户态做 —— 包会全部拷到用户态,CPU 占用比内核抽样高", err, n)
 	}
 
 	if cfg.Iface != "" {
@@ -102,12 +113,23 @@ func (s *afPacketSource) Run(ctx context.Context) error {
 			// 读错误不终止:一个畸形包或瞬时 ENOBUFS 不代表 socket 坏了。
 			continue
 		}
+		if !s.keep() {
+			continue
+		}
 		obs, err := toObservation(buf[:n])
 		if err != nil {
 			continue
 		}
 		s.agg.add(obs)
 	}
+}
+
+// keep 是用户态抽样的判定。userSamplingN 为 0/1 时恒真,不进随机数。
+func (s *afPacketSource) keep() bool {
+	if s.userSamplingN <= 1 {
+		return true
+	}
+	return rand.IntN(s.userSamplingN) == 0
 }
 
 func (s *afPacketSource) Close() error {
@@ -117,6 +139,17 @@ func (s *afPacketSource) Close() error {
 		return err
 	}
 	return nil
+}
+
+// attachSampleFilter 汇编并挂载过滤器。samplingN>1 的那份用到 ExtRand
+// (SKF_AD_RANDOM),那是 Linux 3.16 才有的扩展,更老的内核会在
+// SO_ATTACH_FILTER 上以 EINVAL 拒绝整个程序。
+func attachSampleFilter(fd, samplingN int) error {
+	prog, err := assembleSampleFilter(samplingN)
+	if err != nil {
+		return err
+	}
+	return unix.SetsockoptSockFprog(fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, prog)
 }
 
 func assembleSampleFilter(samplingN int) (*unix.SockFprog, error) {
