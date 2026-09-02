@@ -202,7 +202,7 @@ func TestCompileTopTalker(t *testing.T) {
 		t.Errorf("缺少 LIMIT:\n%s", c.SQL)
 	}
 	// 时间范围必须是第一个 WHERE 条件,让 ClickHouse 能按主键跳 granule
-	if !strings.Contains(c.SQL, "WHERE timestamp >= ? AND timestamp < ?") {
+	if !strings.Contains(c.SQL, "WHERE t.timestamp >= ? AND t.timestamp < ?") {
 		t.Errorf("时间范围应是第一个条件:\n%s", c.SQL)
 	}
 	if len(c.Args) != 2 {
@@ -245,7 +245,7 @@ func TestCompileTimeSeriesUsesAggTable(t *testing.T) {
 		t.Errorf("聚合表上不该出现 count():\n%s", c.SQL)
 	}
 	// 时间列名在聚合表里是 ts_minute 而不是 timestamp
-	if !strings.Contains(c.SQL, "WHERE ts_minute >= ?") {
+	if !strings.Contains(c.SQL, "WHERE t.ts_minute >= ?") {
 		t.Errorf("聚合表的时间列应为 ts_minute:\n%s", c.SQL)
 	}
 	if c.Columns[0] != "ts" {
@@ -370,7 +370,7 @@ func TestCompileContainsAvoidsLikeEscaping(t *testing.T) {
 	q := baseQuery()
 	q.Filters = Condition{Field: "src_org", Operator: OpContains, Value: "100%_Cloud"}
 	c := mustCompile(t, q)
-	if !strings.Contains(c.SQL, "position(src_org, ?) > 0") {
+	if !strings.Contains(c.SQL, "position(t.src_org, ?) > 0") {
 		t.Errorf("contains 应用 position():\n%s", c.SQL)
 	}
 	// 值原样传参,不做任何转义
@@ -557,7 +557,7 @@ func TestTimeSeriesFilterOutsideAggDimsUsesRawTable(t *testing.T) {
 	if c.Table != "flows" {
 		t.Fatalf("过滤 dst_port 应走明细表, got %s", c.Table)
 	}
-	if !strings.Contains(c.SQL, "FROM flows\n") {
+	if !strings.Contains(c.SQL, "FROM flows AS t\n") {
 		t.Errorf("SQL:\n%s", c.SQL)
 	}
 }
@@ -799,5 +799,51 @@ func TestUnknownModeRejected(t *testing.T) {
 	q.Mode = "details"
 	if err := q.Validate(); err == nil {
 		t.Error("mode=details 应该报错")
+	}
+}
+
+// TestWhereColumnsAreQualified 这是一条真实故障的回归测试。
+//
+// SELECT 里 IP 列的输出别名与列同名(... AS src_ip),而 ClickHouse 解析
+// WHERE 里的标识符时优先取 SELECT 的别名。于是"按源 IP 分组 + 只看某个
+// 网段"这种再普通不过的查询会把 WHERE 里的 src_ip 当成 String,报
+// "Illegal type String of argument of function IPv6NumToString"。查询语法
+// 完全合法、报错指向 SELECT,真正的原因是别名遮蔽。
+//
+// 全局排除网段落地后这条路变成了默认路径(每次查询都注入 IP 条件),
+// 明细模式更是必挂 —— 它的 SELECT 永远带 src_ip/dst_ip 两个别名。
+func TestWhereColumnsAreQualified(t *testing.T) {
+	q := baseQuery()
+	q.GroupBy = []string{"src_ip"}
+	q.Metrics = []string{"bytes"}
+	q.Filters = Condition{Field: "src_ip", Operator: OpCIDR, Value: "192.168.1.0/24"}
+	c := mustCompile(t, q)
+	if !strings.Contains(c.SQL, "isIPAddressInRange(IPv6NumToString(t.src_ip)") {
+		t.Errorf("WHERE 里的 src_ip 必须带表别名,否则被 SELECT 的同名别名遮蔽:\n%s", c.SQL)
+	}
+	if !strings.Contains(c.SQL, "FROM flows AS t") {
+		t.Errorf("带了别名的列需要 FROM 上的别名配套:\n%s", c.SQL)
+	}
+}
+
+func TestDetailWhereColumnsAreQualified(t *testing.T) {
+	q := baseQuery()
+	q.Mode = ModeDetail
+	q.GroupBy = nil
+	q.Metrics = nil
+	ex, _ := ExcludeCondition([]string{"10.0.0.0/8"}, ExcludeBoth)
+	q.Filters = AndNot(Condition{}, ex)
+	if err := q.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	c, err := Compile(q)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if strings.Count(c.SQL, "IPv6NumToString(t.") != 2 {
+		t.Errorf("明细模式 WHERE 里的两个 IP 列都要带别名:\n%s", c.SQL)
+	}
+	if !strings.Contains(c.SQL, "FROM flows AS t") {
+		t.Errorf("明细查询也要带表别名:\n%s", c.SQL)
 	}
 }

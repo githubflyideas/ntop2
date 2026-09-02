@@ -21,6 +21,26 @@ type Compiled struct {
 	Columns []string
 }
 
+// tableAlias 是 FROM 后面给表起的别名,WHERE 里的列一律带上它。
+//
+// 为什么必须带:SELECT 里 IP 列输出成字符串时用的别名与列同名
+// (replaceOne(IPv6NumToString(src_ip), ...) AS src_ip),而 ClickHouse 解析
+// WHERE 里的标识符时会优先看 SELECT 的别名。于是一个"按源 IP 分组、且只看
+// 某个网段"的查询会把 WHERE 里的 src_ip 解析成那个 String 别名,报
+// "Illegal type String of argument of function IPv6NumToString"。
+// 报错信息指向 SELECT,而真正的原因在别名遮蔽,极难联系起来。
+//
+// 明细模式更严重:它的 SELECT 永远输出 src_ip/dst_ip 两个同名别名,所以
+// 只要条件里出现 IP 字段就必失败 —— 全局排除网段一开,每一次明细查询都
+// 挂在这里。带上表别名后 t.src_ip 只可能是列,别名再也遮不住它。
+//
+// 没有改成 prefer_column_name_to_alias:那个设置会连 ORDER BY bytes 一起
+// 改成指向原始列,聚合排序会变成"列不在聚合函数里"的错误。
+const tableAlias = "t"
+
+// qualify 给列名加上表别名。列名来自白名单,不是用户输入。
+func qualify(col string) string { return tableAlias + "." + col }
+
 // Compile 把 AST 编译成 SQL。调用前必须先 Validate。
 func Compile(q Query) (Compiled, error) {
 	table := q.Table
@@ -106,13 +126,15 @@ func Compile(q Query) (Compiled, error) {
 	b.WriteString(strings.Join(sel, ", "))
 	b.WriteString("\nFROM ")
 	b.WriteString(table)
+	b.WriteString(" AS ")
+	b.WriteString(tableAlias)
 
 	// 时间范围永远进 WHERE,而且是第一个条件:ORDER BY 以 timestamp
 	// 开头,这让 ClickHouse 能直接按主键跳过无关 granule。
 	b.WriteString("\nWHERE ")
-	b.WriteString(tsCol)
+	b.WriteString(qualify(tsCol))
 	b.WriteString(" >= ? AND ")
-	b.WriteString(tsCol)
+	b.WriteString(qualify(tsCol))
 	b.WriteString(" < ?")
 	args = append(args, q.TimeRange.From, q.TimeRange.To)
 
@@ -172,8 +194,8 @@ func compileDetail(q Query, table, tsCol string) (Compiled, error) {
     tcp_flags, application, src_country, dst_country,
     src_asn, dst_asn, src_org, dst_org,
     source_type, device_id, input_interface, vlan, duration_ms
-FROM flows
-WHERE timestamp >= ? AND timestamp < ?`
+FROM flows AS t
+WHERE t.timestamp >= ? AND t.timestamp < ?`
 
 	args := []any{q.TimeRange.From, q.TimeRange.To}
 	where, wargs, err := compileCondition(q.Filters)
@@ -380,7 +402,7 @@ func compileCondition(c Condition) (string, []any, error) {
 
 func compileLeaf(c Condition) (string, []any, error) {
 	fd := filterableFields[c.Field]
-	col := fd.column
+	col := qualify(fd.column)
 
 	switch c.Operator {
 	case OpEq, OpNe, OpGt, OpGte, OpLt, OpLte:
