@@ -118,6 +118,23 @@ svg{display:block;width:100%;height:auto}
 
 .cond{display:flex;gap:7px;align-items:center;margin-bottom:7px}
 .cond select,.cond input{font-size:14px}
+/* 条件区分成两块。以前只有一块加一个 AND/OR 开关,想表达"这些要、
+   那些不要"只能靠 ne / not_in 一条条写,而"排除掉内网互访"这种意图
+   本来就是一块整体。 */
+.cgroup{border:1px solid var(--line);border-radius:7px;padding:9px 11px;margin-bottom:9px}
+.chead{display:flex;gap:9px;align-items:center;font-size:14px;font-weight:600;margin-bottom:8px}
+.chead .hint{margin:0;font-weight:400}
+.chead .sp{flex:1}
+.cerr{color:#ff9c9c;font-size:13px;margin:-3px 0 7px 4px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border-radius:12px;
+ border:1px solid var(--line2);font-size:13.5px;color:var(--dim);cursor:pointer;user-select:none}
+.chip input{margin:0}
+.chip.on{background:rgba(61,126,255,.16);border-color:rgba(61,126,255,.45);color:#cfe0ff}
+.lb{color:var(--dim);font-size:14px}
+.chk{display:inline-flex;align-items:center;gap:5px;color:var(--dim);font-size:14px}
+/* 明细模式一行有二十多列,不给横向滚动的话表格会把整个面板撑破。 */
+.scroll{overflow-x:auto}
 pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
  border-radius:6px;font-family:ui-monospace,Menlo,monospace;font-size:13.5px;
  overflow-x:auto;white-space:pre-wrap;color:var(--dim)}
@@ -243,20 +260,42 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
     <div class="panel">
       <h2>Query Builder</h2>
       <p class="hint">界面提交 Query AST,不拼 SQL —— 字段与运算符都有白名单</p>
-      <div id="conds"></div>
-      <div class="bar">
-        <button class="gh" id="addcond">+ 条件</button>
-        <select id="e-logic"><option value="AND">全部满足 (AND)</option><option value="OR">任一满足 (OR)</option></select>
+      <div class="cgroup">
+        <div class="chead">必须满足
+          <span class="sp"></span>
+          <select id="e-logic"><option value="AND">全部满足 (AND)</option><option value="OR">任一满足 (OR)</option></select>
+          <button class="gh" id="addcond">+ 条件</button>
+        </div>
+        <div id="conds"></div>
+      </div>
+      <div class="cgroup">
+        <div class="chead">排除 <span class="hint">任一条命中就把这条流排掉</span>
+          <span class="sp"></span>
+          <button class="gh" id="adddrop">+ 排除条件</button>
+        </div>
+        <div id="drops"></div>
       </div>
       <div class="bar">
-        <label style="color:var(--dim);font-size:14px">分组</label>
-        <select id="e-group"></select>
-        <label style="color:var(--dim);font-size:14px">指标</label>
-        <select id="e-metric"></select>
-        <label style="color:var(--dim);font-size:14px">条数</label>
+        <label class="lb">方式</label>
+        <select id="e-mode"><option value="">聚合</option><option value="detail">明细行</option></select>
+        <label class="lb">条数</label>
         <input type="number" id="e-limit" value="100" style="width:78px">
+        <span class="chk" id="e-ivwrap"><label class="lb">粒度</label>
+          <select id="e-interval"></select></span>
+        <label class="lb">排序</label>
+        <select id="e-sort"></select>
+        <select id="e-sortdir"><option value="desc">降序</option><option value="asc">升序</option></select>
+      </div>
+      <div class="bar" id="e-dimbar">
+        <label class="lb">分组</label><div class="chips" id="e-group"></div>
+      </div>
+      <div class="bar" id="e-metbar">
+        <label class="lb">指标</label><div class="chips" id="e-metric"></div>
+      </div>
+      <div class="bar">
         <button class="act" id="e-run">查询</button>
         <button class="gh" id="e-explain">查看 SQL</button>
+        <label class="chk"><input type="checkbox" id="e-inclex"> 包含被全局排除的网段</label>
       </div>
       <div class="bar" style="margin:2px 0 0;padding-top:10px;border-top:1px solid var(--line)">
         <span class="hint" style="margin:0">保存的查询</span>
@@ -905,23 +944,132 @@ async function loadGeo(){
 }
 
 // --- Explorer ---
-// addCond 加一行过滤条件。preset 非空时按它预填(加载保存的查询用)。
-function addCond(preset){
+
+// 明细模式能排序的字段。与后端 detailSortColumns 一致 —— 前端多给一个
+// 选项,后端会直接拒掉整个查询。
+const DETAIL_SORTS = ['ts','bytes','packets','duration_ms','src_port','dst_port'];
+
+// ipOk / cidrOk 在提交之前先把 IP 与网段拦一遍。
+//
+// 不拦也能跑:ClickHouse 会因为 toIPv6('随便写的') 报错,界面上出现一句
+// 看不懂的英文异常,而错在哪一行、哪个格子完全没有线索。
+function ipOk(s){
+  if(s.indexOf(':')>=0){
+    if(!/^[0-9a-fA-F:.]+$/.test(s)) return false;
+    const dbl=(s.match(/::/g)||[]).length;
+    if(dbl>1) return false;
+    const parts=s.split(':');
+    return parts.length<=8 && (dbl===1 || parts.every(x=>x!==''));
+  }
+  const p=s.split('.');
+  return p.length===4 && p.every(x=>/^\d{1,3}$/.test(x) && Number(x)<=255);
+}
+function cidrOk(s){
+  const i=s.indexOf('/');
+  if(i<0) return false;
+  const ip=s.slice(0,i), bits=s.slice(i+1);
+  if(!/^\d{1,3}$/.test(bits) || !ipOk(ip)) return false;
+  return Number(bits) <= (ip.indexOf(':')>=0 ? 128 : 32);
+}
+
+// checkValue 按字段类型校验并转换一个格子里的值,返回 {value} 或 {err}。
+//
+// 类型转换本身是必须的(整型字段传字符串过去,ClickHouse 直接报类型
+// 不匹配);校验是顺带的,因为知道类型之后判断几乎不要钱,而省下的是
+// 一次往返和一句看不懂的报错。
+function checkValue(field, op, raw){
+  const meta = FIELDS && FIELDS.filterable.find(f=>f.name===field);
+  const kind = meta ? meta.kind : 'string';
+  const multi = (op==='in'||op==='not_in');
+  const parts = multi ? String(raw).split(',').map(x=>x.trim()).filter(Boolean)
+                      : [String(raw).trim()];
+  if(!parts.length) return {err:'值不能为空'};
+  const out=[];
+  for(const v of parts){
+    if(kind==='int'){
+      if(!/^-?\d+$/.test(v)) return {err:field+' 是整数字段,'+v+' 不是整数'};
+      out.push(Number(v));
+      continue;
+    }
+    if(kind==='ip'){
+      if(op==='cidr'||op==='not_cidr'){
+        if(!cidrOk(v)) return {err:'网段要带掩码位数,写成 192.168.1.0/24 这样:'+v};
+      } else if(!ipOk(v)){
+        return {err:'不是合法的 IP 地址:'+v};
+      }
+    }
+    out.push(v);
+  }
+  return {value: multi ? out : out[0]};
+}
+
+// filterTree 把界面上两块条件拼成一棵 Condition 树。
+//
+// 「排除」块固定编译成 NOT(OR(...)):它的语义是"任一条命中就排掉"。
+// 让它跟着上面那个 AND/OR 走的话,"排除 A 或 B"与"排除 A 且 B"在界面上
+// 根本读不出差别,而两者的结果差得很远。
+function filterTree(must, drop, logic){
+  const parts=[];
+  if(must.length===1) parts.push(must[0]);
+  else if(must.length>1) parts.push({op:logic||'AND', conditions:must});
+  if(drop.length){
+    parts.push({op:'NOT', conditions:[drop.length===1?drop[0]:{op:'OR', conditions:drop}]});
+  }
+  if(!parts.length) return undefined;
+  if(parts.length===1) return parts[0];
+  return {op:'AND', conditions:parts};
+}
+
+// sortChoices 算出当前能按哪些字段排序。
+//
+// 后端要求排序字段必须是选出来的列之一(按没选的列排序在 SQL 里合法但
+// 结果没法解释)。界面上照着这条规则动态生成选项,而不是列出所有字段
+// 再等后端拒绝 —— 拒绝发生在点了查询之后,而那时用户已经填完了。
+function sortChoices(mode, dims, metrics, interval){
+  if(mode==='detail') return DETAIL_SORTS.slice();
+  const out=[];
+  if(interval) out.push('ts');
+  for(const m of metrics) if(out.indexOf(m)<0) out.push(m);
+  for(const d of dims) if(out.indexOf(d)<0) out.push(d);
+  return out;
+}
+
+// addCond 加一行过滤条件。preset 非空时按它预填(加载保存的查询用),
+// box 是要加到哪一块('#conds' 必须满足 / '#drops' 排除)。
+function addCond(preset, box){
   if(!FIELDS) return;
-  const d=document.createElement('div');
-  d.className='cond';
-  const fopts=FIELDS.filterable.map(f=>'<option value="'+esc(f.name)+'" data-ops="'+esc(f.operators.join(','))+'">'+esc(f.name)+'</option>').join('');
-  d.innerHTML='<select class="c-field" style="width:150px">'+fopts+'</select>'
+  const w=document.createElement('div');
+  const fopts=FIELDS.filterable.map(f=>'<option value="'+esc(f.name)+'" data-ops="'+esc(f.operators.join(','))+'" data-kind="'+esc(f.kind)+'">'+esc(f.name)+'</option>').join('');
+  w.className='cw';
+  w.innerHTML='<div class="cond"><select class="c-field" style="width:150px">'+fopts+'</select>'
     + '<select class="c-op" style="width:120px"></select>'
-    + '<input type="text" class="c-val" placeholder="值" style="width:190px">';
-  const rm=document.createElement('button'); rm.className='gh'; rm.textContent='删除';
-  rm.onclick=()=>d.remove(); d.appendChild(rm);
-  const fs=d.querySelector('.c-field'), os=d.querySelector('.c-op');
+    + '<input type="text" class="c-val" placeholder="值" style="width:210px">'
+    + '<button class="gh c-del">删除</button></div>'
+    + '<div class="cerr" style="display:none"></div>';
+  w.querySelector('.c-del').onclick=()=>w.remove();
+
+  const fs=w.querySelector('.c-field'), os=w.querySelector('.c-op'), vi=w.querySelector('.c-val');
   const syncOps=()=>{
     const ops=(fs.selectedOptions[0].dataset.ops||'').split(',').filter(Boolean);
     os.innerHTML=ops.map(o=>'<option>'+esc(o)+'</option>').join('');
   };
-  fs.onchange=syncOps; syncOps();
+  // syncVal 按字段类型换输入控件。整数字段给 number 输入框(手机上直接
+  // 弹数字键盘,也不用等提交才知道填了字母),IP 字段给出该有的样例 ——
+  // cidr 忘了写掩码位数是最常见的填法错误。
+  const syncVal=()=>{
+    const kind=fs.selectedOptions[0].dataset.kind||'string';
+    const op=os.value, multi=(op==='in'||op==='not_in');
+    if(kind==='int' && !multi){ vi.type='number'; vi.placeholder='整数'; }
+    else {
+      vi.type='text';
+      vi.placeholder = multi ? '多个值用逗号分隔'
+        : (op==='cidr'||op==='not_cidr') ? '192.168.1.0/24'
+        : kind==='ip' ? 'IP 地址' : '值';
+    }
+  };
+  fs.onchange=()=>{ syncOps(); syncVal(); };
+  os.onchange=syncVal;
+  syncOps();
 
   if(preset && preset.field){
     fs.value = preset.field;
@@ -929,53 +1077,112 @@ function addCond(preset){
     if(preset.operator) os.value = preset.operator;
     const v = preset.value;
     // in / not_in 存的是数组,界面上是一个逗号分隔的输入框
-    d.querySelector('.c-val').value = Array.isArray(v) ? v.join(',') : String(v==null?'':v);
+    vi.value = Array.isArray(v) ? v.join(',') : String(v==null?'':v);
   }
+  syncVal();
 
-  $('#conds').appendChild(d);
+  $(box||'#conds').appendChild(w);
 }
 
-// buildLeaves 读出 Query Builder 里的叶子条件。
+// readConds 读一块条件区,返回 {leaves, bad}。
 //
-// 与 buildFilters 分开是因为保存查询要存的是这份平铺列表:存组装好的
-// 条件树的话,加载时还得把树拆回一行行界面控件,而界面本来就只能表达
-// 平铺结构 —— 存了树反而要写一个只用来读自己写出来的树的解析器。
-function buildLeaves(){
-  const conds=[];
-  for(const el of document.querySelectorAll('#conds .cond')){
-    const field=el.querySelector('.c-field').value;
-    const op=el.querySelector('.c-op').value;
-    let val=el.querySelector('.c-val').value.trim();
-    if(!val) continue;
-    // in / not_in 接受逗号分隔;数字字段转成数字,否则 ClickHouse 类型不匹配
-    const meta=FIELDS.filterable.find(f=>f.name===field);
-    const num=meta&&meta.kind==='int';
-    if(op==='in'||op==='not_in'){
-      conds.push({field,operator:op,value:val.split(',').map(s=>num?Number(s.trim()):s.trim())});
-    } else {
-      conds.push({field,operator:op,value:num?Number(val):val});
-    }
+// 校验不过的格子把原因写在那一行下面,并让 bad 为真让调用方别发请求。
+// 交给后端报错是能跑通的做法,但报出来的是"哪个字段类型不对",看的人
+// 没法对应到自己填的第几行。
+function readConds(box){
+  const leaves=[]; let bad=false;
+  for(const w of document.querySelectorAll(box+' .cw')){
+    const e=w.querySelector('.cerr');
+    e.style.display='none'; e.textContent='';
+    const field=w.querySelector('.c-field').value;
+    const op=w.querySelector('.c-op').value;
+    const raw=w.querySelector('.c-val').value.trim();
+    if(!raw) continue;                     // 空行当成没填,不报错
+    const r=checkValue(field, op, raw);
+    if(r.err){ e.textContent=r.err; e.style.display='block'; bad=true; continue; }
+    leaves.push({field:field, operator:op, value:r.value});
   }
-  return conds;
+  return {leaves:leaves, bad:bad};
 }
 
-function buildFilters(){
-  const conds = buildLeaves();
-  if(!conds.length) return undefined;
-  if(conds.length===1) return conds[0];
-  return {op:$('#e-logic').value, conditions:conds};
+// buildLeaves 保留下来给保存查询用:存的是「必须满足」那一块的平铺列表。
+function buildLeaves(){ return readConds('#conds').leaves; }
+function buildDrops(){ return readConds('#drops').leaves; }
+
+function chipsOn(box){
+  return Array.from(document.querySelectorAll(box+' input:checked')).map(i=>i.value);
+}
+function renderChips(box, names, on){
+  $(box).innerHTML = names.map(n=>'<label class="chip'+(on.indexOf(n)>=0?' on':'')+'">'
+    + '<input type="checkbox" value="'+esc(n)+'"'+(on.indexOf(n)>=0?' checked':'')+'> '+esc(n)+'</label>').join('');
+  $(box).querySelectorAll('input').forEach(i=>i.onchange=()=>{
+    i.parentNode.classList.toggle('on', i.checked);
+    syncSort();
+  });
+}
+
+// syncSort 重建排序下拉框,尽量保住用户当前的选择。
+function syncSort(){
+  const sel=$('#e-sort'), cur=sel.value;
+  const opts=sortChoices($('#e-mode').value, chipsOn('#e-group'), chipsOn('#e-metric'), $('#e-interval').value);
+  sel.innerHTML=opts.map(o=>'<option>'+esc(o)+'</option>').join('');
+  if(opts.indexOf(cur)>=0) sel.value=cur;
+}
+
+// syncMode 明细模式下把分组、指标、粒度收起来 —— 它们与明细互斥,
+// 留在那里让人以为选了有用,而后端会因为互斥直接拒掉整个查询。
+function syncMode(){
+  const detail = $('#e-mode').value==='detail';
+  $('#e-dimbar').style.display = detail?'none':'flex';
+  $('#e-metbar').style.display = detail?'none':'flex';
+  $('#e-ivwrap').style.display = detail?'none':'inline-flex';
+  syncSort();
 }
 
 function explorerAST(){
-  return {time_range:timeRange(), filters:buildFilters(),
-    group_by:[$('#e-group').value], metrics:[$('#e-metric').value],
+  const must=readConds('#conds'), drop=readConds('#drops');
+  if(must.bad||drop.bad) return null;
+  const q={time_range:timeRange(), filters:filterTree(must.leaves, drop.leaves, $('#e-logic').value),
     limit:parseInt($('#e-limit').value)||100};
+  if($('#e-inclex').checked) q.include_excluded=true;
+  if($('#e-mode').value==='detail'){
+    q.mode='detail';
+  } else {
+    q.group_by=chipsOn('#e-group');
+    q.metrics=chipsOn('#e-metric');
+    if($('#e-interval').value) q.interval=$('#e-interval').value;
+  }
+  // 排序字段必须在选出来的列里。指标被全部取消勾选时后端会补一套默认
+  // 指标,这时把陈旧的排序字段一起发过去会让整个查询被拒 —— 不如不发,
+  // 让后端补它的默认排序。
+  const opts=sortChoices($('#e-mode').value, q.group_by||[], q.metrics||[], q.interval||'');
+  const f=$('#e-sort').value;
+  if(f && opts.indexOf(f)>=0) q.sort={field:f, desc:$('#e-sortdir').value!=='asc'};
+  return q;
+}
+
+// cellText 按列名决定一个格子怎么显示。明细行里 ts / ts_end 是 Unix 秒,
+// 直接印出来是一串十位数字;protocol 是协议号,印 6 和 17 也没人在读。
+function cellText(col, v){
+  if(col==='ts'||col==='ts_end') return esc(ts(v));
+  if(col==='protocol') return esc(protoLabel(v));
+  if(col==='bytes'||col==='observed_bytes') return fmtBytes(v);
+  if(col==='packets'||col==='observed_packets'||col==='flows'
+     ||col.indexOf('uniq')===0||col.indexOf('duration')===0) return fmtNum(v);
+  return esc(v===null||v===undefined||v===''?'—':v);
+}
+function cellClass(col){
+  if(col==='bytes'||col==='packets'||col==='flows'||col==='duration_ms'
+     ||col.indexOf('observed')===0||col.indexOf('uniq')===0) return 'num';
+  return 'mono';
 }
 
 async function runExplore(){
   showErr(''); $('#e-sql').innerHTML='';
+  const ast=explorerAST();
+  if(!ast){ showErr('有条件没填对,看条件行下面那句提示'); return; }
   let d;
-  try { d = await api('/api/v1/query', explorerAST()); }
+  try { d = await api('/api/v1/query', ast); }
   catch(e){ showErr(e.message); $('#e-out').innerHTML=''; return; }
   if(!d) return;
   if(!d.rows.length){ $('#e-out').innerHTML='<div class="empty">没有匹配的数据</div>'; return; }
@@ -985,22 +1192,22 @@ async function runExplore(){
   const st = d.statistics || {};
   let h='<p class="hint">'+fmtNum(st.rows_returned!==undefined?st.rows_returned:d.rows.length)
       + ' 行 · '+(st.elapsed_ms||0)+' ms · 表 '+esc(st.table||'—')+'</p>';
-  h+='<table><tr>'+d.columns.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr><tbody>';
+  h+='<div class="scroll"><table><tr>'+d.columns.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr><tbody>';
   for(const r of d.rows){
     h+='<tr>'+r.map((v,i)=>{
       const c=d.columns[i];
-      const cls=(c==='bytes'||c==='packets'||c==='flows'||c.startsWith('observed')||c.startsWith('uniq'))?'num':'mono';
-      const disp=c==='bytes'||c==='observed_bytes'?fmtBytes(v):(cls==='num'?fmtNum(v):esc(v));
-      return '<td class="'+cls+'">'+disp+'</td>';
+      return '<td class="'+cellClass(c)+'">'+cellText(c,v)+'</td>';
     }).join('')+'</tr>';
   }
-  $('#e-out').innerHTML=h+'</tbody></table>';
+  $('#e-out').innerHTML=h+'</tbody></table></div>';
 }
 
 async function explainExplore(){
   showErr('');
+  const ast=explorerAST();
+  if(!ast){ showErr('有条件没填对,看条件行下面那句提示'); return; }
   try {
-    const d = await api('/api/v1/query/explain', explorerAST());
+    const d = await api('/api/v1/query/explain', ast);
     $('#e-sql').innerHTML='<pre>'+esc(d.sql)+'</pre>';
   } catch(e){ showErr(e.message); }
 }
@@ -1026,10 +1233,13 @@ async function loadSaved(){
 async function saveQuery(){
   const name = $('#sq-name').value.trim();
   if(!name){ sqMsg('请先起个名字', true); return; }
+  const ast = explorerAST();
+  if(!ast){ sqMsg('有条件没填对,先改好再保存', true); return; }
   const body = {name:name, range:$('#range').value,
-    metric:$('#e-metric').value, group_by:$('#e-group').value,
-    limit:parseInt($('#e-limit').value)||100,
-    logic:$('#e-logic').value, filters:buildLeaves()};
+    limit:parseInt($('#e-limit').value)||100, mode:$('#e-mode').value,
+    group_bys:ast.group_by||[], metrics:ast.metrics||[], interval:ast.interval||'',
+    logic:$('#e-logic').value, filters:buildLeaves(), excludes:buildDrops()};
+  if(ast.sort) body.sort=ast.sort;
   // 只有真的选了自定义区间才带绝对时间。不然把上次填过的残留值一起
   // 存进去,加载时就会拿一个用户没选过的区间去查。
   if(body.range==='custom'){ body.from=$('#from').value; body.to=$('#to').value; }
@@ -1051,15 +1261,29 @@ async function loadSavedQuery(){
   const custom = q.range==='custom';
   $('#custom-range').style.display = custom ? 'inline-flex' : 'none';
   if(custom){ $('#from').value=q.from||''; $('#to').value=q.to||''; }
-  $('#e-metric').value = q.metric;
-  $('#e-group').value = q.group_by;
+  // 老记录只有单数的 metric / group_by。后端读的时候已经补齐成复数了,
+  // 这里再兜一次是因为界面也可能拿到没经过后端迁移的数据(比如手工
+  // 编辑过 queries.json)。
+  const dims = (q.group_bys && q.group_bys.length) ? q.group_bys : (q.group_by?[q.group_by]:[]);
+  const mets = (q.metrics && q.metrics.length) ? q.metrics : (q.metric?[q.metric]:[]);
+  $('#e-mode').value = q.mode||'';
+  $('#e-interval').value = q.interval||'';
+  renderChips('#e-group', FIELDS.groupable, dims);
+  renderChips('#e-metric', FIELDS.metrics, mets);
   $('#e-limit').value = q.limit;
   $('#e-logic').value = q.logic||'AND';
   $('#sq-name').value = q.name;
+  syncMode();
+  if(q.sort && q.sort.field){
+    $('#e-sort').value = q.sort.field;
+    $('#e-sortdir').value = q.sort.desc===false ? 'asc' : 'desc';
+  }
 
   $('#conds').innerHTML='';
-  for(const c of (q.filters||[])) addCond(c);
-  if(!(q.filters||[]).length) addCond();
+  for(const c of (q.filters||[])) addCond(c, '#conds');
+  if(!(q.filters||[]).length) addCond(null, '#conds');
+  $('#drops').innerHTML='';
+  for(const c of (q.excludes||[])) addCond(c, '#drops');
 
   sqMsg('已加载 ' + q.name);
   const err = refreshRange();
@@ -1086,12 +1310,18 @@ $('#sq-del').onclick=()=>delSavedQuery().catch(e=>sqMsg(e.message,true));
 async function loadFields(){
   FIELDS = await api('/api/v1/query/fields');
   if(!FIELDS) return;
-  $('#e-group').innerHTML=FIELDS.groupable.map(g=>'<option'+(g==='src_ip'?' selected':'')+'>'+esc(g)+'</option>').join('');
-  $('#e-metric').innerHTML=FIELDS.metrics.map(m=>'<option'+(m==='bytes'?' selected':'')+'>'+esc(m)+'</option>').join('');
-  if(!document.querySelector('#conds .cond')) addCond();
+  renderChips('#e-group', FIELDS.groupable, ['src_ip']);
+  renderChips('#e-metric', FIELDS.metrics, ['bytes']);
+  $('#e-interval').innerHTML='<option value="">不分桶</option>'
+    + FIELDS.intervals.map(i=>'<option value="'+esc(i)+'">'+esc(i)+'</option>').join('');
+  syncMode();
+  if(!document.querySelector('#conds .cw')) addCond(null, '#conds');
 }
 
-$('#addcond').onclick=addCond;
+$('#addcond').onclick=()=>addCond(null,'#conds');
+$('#adddrop').onclick=()=>addCond(null,'#drops');
+$('#e-mode').onchange=syncMode;
+$('#e-interval').onchange=syncSort;
 $('#e-run').onclick=runExplore;
 $('#e-explain').onclick=explainExplore;
 
