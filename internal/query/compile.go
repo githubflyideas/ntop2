@@ -463,6 +463,16 @@ func compileLeaf(c Condition) (string, []any, error) {
 //
 // 顺带把写坏的网段变成明确的错误。以前 "10.0.0.0"(少掩码)、"/33"、
 // 随便一串字都是原样递给 ClickHouse,同样是静默匹配不到。
+// normalizePrefix 把网段规范成 10.0.0.0/8 这种形式(主机位清零),
+// 用于存进配置与显示给人看。要拿去跟 IPv6 列比较的是 mappedPrefix。
+func normalizePrefix(v string) (string, error) {
+	p, err := netip.ParsePrefix(strings.TrimSpace(v))
+	if err != nil {
+		return "", fmt.Errorf("网段 %q 不合法(要写成 10.0.0.0/8 或 2001:db8::/32 这样): %w", v, err)
+	}
+	return p.Masked().String(), nil
+}
+
 func mappedPrefix(v string) (string, error) {
 	p, err := netip.ParsePrefix(strings.TrimSpace(v))
 	if err != nil {

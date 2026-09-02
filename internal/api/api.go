@@ -35,6 +35,10 @@ type Server struct {
 	// queries 是保存查询的持久化(DataDir/queries.json)。
 	queries *queryStore
 
+	// settings 是界面设置的持久化(DataDir/settings.json),目前是全局
+	// 排除网段。它参与每一次查询,见 applyExclusions。
+	settings *settingsStore
+
 	// DataDir 用于存放上传的 mmdb。
 	DataDir string
 
@@ -64,7 +68,8 @@ func New(cfg Config) *Server {
 		st: cfg.Store, au: cfg.Auth, asn: cfg.ASN, mmdb: cfg.MMDB,
 		city: cfg.City, syncer: cfg.Syncer,
 		log: lg, DataDir: cfg.DataDir, Inputs: cfg.Inputs,
-		queries: newQueryStore(cfg.DataDir),
+		queries:  newQueryStore(cfg.DataDir),
+		settings: newSettingsStore(cfg.DataDir),
 	}
 }
 
@@ -87,6 +92,10 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/queries", s.authed(s.handleQueriesList))
 	mux.HandleFunc("/api/v1/queries/save", s.authed(s.handleQuerySave))
 	mux.HandleFunc("/api/v1/queries/delete", s.authed(s.handleQueryDelete))
+
+	// 界面设置。全局排除网段在这里配,由查询入口统一注入。
+	mux.HandleFunc("/api/v1/settings", s.authed(s.handleSettings))
+	mux.HandleFunc("/api/v1/settings/save", s.authed(s.handleSettingsSave))
 
 	mux.HandleFunc("/api/v1/overview", s.authed(s.handleOverview))
 	mux.HandleFunc("/api/v1/enrich/mmdb", s.authed(s.handleMMDBUpload))
@@ -158,11 +167,12 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request, user string
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	var q query.Query
-	if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "AST 格式错误: " + err.Error()})
+	q, includeExcluded, err := decodeQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	q = s.applyExclusions(q, includeExcluded)
 
 	res, err := s.st.Query(r.Context(), q)
 	if err != nil {
@@ -183,17 +193,37 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request, user stri
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	var q query.Query
-	if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "AST 格式错误: " + err.Error()})
+	q, includeExcluded, err := decodeQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	// EXPLAIN 也要注入排除条件:界面上"查看 SQL"的用处正是核对这次查询
+	// 到底带了什么条件,如果它显示的 SQL 与实际执行的不一样,那这个按钮
+	// 就是在骗人。
+	q = s.applyExclusions(q, includeExcluded)
 	stats, err := s.st.Explain(q)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// decodeQuery 解出 Query AST 以及"这次不要应用全局排除"这个请求级开关。
+//
+// include_excluded 不放进 query.Query:AST 描述的是"查什么",而它说的是
+// "服务端的默认设置这次别管" —— 那是传输层的事。混进 AST 会让保存下来的
+// 查询里也带上这个字段,而它在别的时刻没有意义。
+func decodeQuery(r *http.Request) (query.Query, bool, error) {
+	var req struct {
+		query.Query
+		IncludeExcluded bool `json:"include_excluded,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return query.Query{}, false, fmt.Errorf("AST 格式错误: %w", err)
+	}
+	return req.Query, req.IncludeExcluded, nil
 }
 
 // handleFields 返回可用字段与运算符。
