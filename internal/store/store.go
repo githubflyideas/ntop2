@@ -39,6 +39,34 @@ type Store struct {
 	db   string
 }
 
+// Ping 只验证"连得上、认得过",不建库不建表。
+//
+// 探活要用它而不是 Open:Open 会跑 DDL,拿它探活等于每次启动都往
+// default 库里建一套 schema;而只有 INSERT 权限的写入节点更是会直接失败。
+func Ping(ctx context.Context, cfg Config) error {
+	db := cfg.Database
+	if db == "" {
+		db = "default"
+	}
+	conn, err := clickhouse.Open(&clickhouse.Options{
+		Addr: []string{cfg.Addr},
+		Auth: clickhouse.Auth{
+			Database: db,
+			Username: cfg.Username,
+			Password: cfg.Password,
+		},
+		DialTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("store: open: %w", err)
+	}
+	defer conn.Close()
+	if err := conn.Ping(ctx); err != nil {
+		return fmt.Errorf("store: ping: %w", err)
+	}
+	return nil
+}
+
 // Open 建立连接并确保 schema 存在。
 //
 // 建表放在 Open 里而不是交给外部迁移脚本:三层 schema 是这个存储层的

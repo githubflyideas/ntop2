@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +36,10 @@ type Managed struct {
 	mu     sync.Mutex
 	waited bool
 
+	listenHost string
+	username   string
+	password   string
+
 	TCPPort  int
 	HTTPPort int
 }
@@ -49,6 +56,19 @@ type ManagedConfig struct {
 	HTTPPort int
 	// MaxMemoryBytes 单查询内存上限。0 用默认。
 	MaxMemoryBytes int64
+
+	// ListenHost 是 clickhouse 自己监听的地址,空则 127.0.0.1。
+	//
+	// 默认只绑回环,但这只是默认值、不是限制:一台机器上跑 ClickHouse、
+	// 别的节点写进来是完全正常的部署形态,填 0.0.0.0 就行。没有密码时
+	// 会打一行警告,但不拦着 —— 库里是流量记录不是密钥,边界该由谁来划
+	// (防火墙、内网、还是密码)是部署者的判断,不是这个程序的。
+	ListenHost string
+
+	// Username / Password 是给 clickhouse 里那个账号用的。Username 空
+	// 则 "default"。Password 非空时 users.xml 里只写 sha256,明文不落盘。
+	Username string
+	Password string
 }
 
 // DefaultBinPath 返回与当前可执行文件同目录的 clickhouse 路径。
@@ -83,6 +103,12 @@ func StartManaged(ctx context.Context, cfg ManagedConfig) (*Managed, error) {
 	}
 	if cfg.HTTPPort == 0 {
 		cfg.HTTPPort = 8123
+	}
+	if cfg.ListenHost == "" {
+		cfg.ListenHost = "127.0.0.1"
+	}
+	if cfg.Username == "" {
+		cfg.Username = "default"
 	}
 
 	logDir := filepath.Join(cfg.DataDir, "log")
@@ -124,7 +150,8 @@ func StartManaged(ctx context.Context, cfg ManagedConfig) (*Managed, error) {
 	}
 
 	m := &Managed{cmd: cmd, dataDir: cfg.DataDir, binPath: cfg.BinPath,
-		TCPPort: cfg.TCPPort, HTTPPort: cfg.HTTPPort}
+		TCPPort: cfg.TCPPort, HTTPPort: cfg.HTTPPort,
+		listenHost: cfg.ListenHost, username: cfg.Username, password: cfg.Password}
 
 	if err := m.waitReady(ctx); err != nil {
 		_ = m.Stop(5 * time.Second)
@@ -159,9 +186,13 @@ func (m *Managed) waitReady(ctx context.Context) error {
 		default:
 		}
 
-		probe, err := Open(ctx, Config{Addr: m.Addr(), Database: "default"})
+		// 探活必须带凭据,而且不能走 Open ——
+		// 一是设了密码之后匿名连接会被 AUTHENTICATION_FAILED 挡住,
+		// 这个循环只会空转到 60 秒超时,而超时信息看不出是认证问题;
+		// 二是 Open 会建表,拿它探活等于往 default 库里建一套 schema。
+		err := Ping(ctx, Config{Addr: m.Addr(), Database: "default",
+			Username: m.username, Password: m.password})
 		if err == nil {
-			probe.Close()
 			// 就绪之后把 Wait 的所有权交回 Stop:它需要靠 Wait 回收
 			// 进程,不能被这里的 goroutine 抢走。
 			go func() { <-exited; m.markWaited() }()
@@ -266,7 +297,45 @@ func (m *Managed) markWaited() {
 }
 
 // Addr 返回 native protocol 地址。
-func (m *Managed) Addr() string { return fmt.Sprintf("127.0.0.1:%d", m.TCPPort) }
+// Addr 是 ntop2ban 自己连过去用的地址。
+//
+// 监听 0.0.0.0 / :: 时不能把这个通配地址原样拿去 dial —— 要映回回环。
+func (m *Managed) Addr() string {
+	host := m.listenHost
+	switch host {
+	case "", "0.0.0.0", "::", "*", "localhost":
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, fmt.Sprint(m.TCPPort))
+}
+
+// Username / Password 是 ntop2ban 连自己这个内嵌实例要用的凭据。
+func (m *Managed) Username() string { return m.username }
+func (m *Managed) Password() string { return m.password }
+
+// isLoopbackHost 判断这个监听地址是不是只有本机能连。
+func isLoopbackHost(host string) bool {
+	switch host {
+	case "", "localhost":
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// ListenWarning 在把内嵌 ClickHouse 开出本机、又没有设密码时给一句警告。
+//
+// 只警告不拦着:是不是该开、边界靠什么划,是部署者的判断。但这件事值得
+// 说一句 —— 库里是这台机器完整的通信记录,而 9000 之外 8123 的 HTTP 口
+// 也是一起开出去的。
+func ListenWarning(listenHost, password string) string {
+	if isLoopbackHost(listenHost) || password != "" {
+		return ""
+	}
+	return "内嵌 ClickHouse 监听 " + listenHost + " 且没有设密码 —— " +
+		"native 9000 与 HTTP 8123 两个口都是匿名可读的,库里是这台机器完整的通信记录。" +
+		"要加密码就用环境变量 NTOP2BAN_CLICKHOUSE_PASSWORD=...(放环境变量而不是命令行参数,是为了不出现在 ps 的输出里)"
+}
 
 // Stop 优雅停止:先 SIGTERM 让 ClickHouse 刷盘关连接,超时再 SIGKILL。
 //
@@ -304,13 +373,20 @@ func (m *Managed) Stop(timeout time.Duration) error {
 
 // renderServerConfig 生成最小 config.xml。
 //
-// 只绑 127.0.0.1:这是随 ntop2ban 本机跑的内嵌存储,不该被外部直接触达。
-// 对外的访问控制由 ntop2ban 的 web 层负责。
+// 默认只绑 127.0.0.1 —— 内嵌存储通常只有本机的 ntop2ban 用它,少开一个
+// 口就少一分要解释的事。要让别的节点写进来就设 ListenHost。
 //
 // 移除 mysql/postgresql 兼容端口与 interserver 端口:单机内嵌不需要,
 // 少开端口少一分攻击面。注意 interserver_http_port 不能写成空值——
 // ClickHouse 解析空字符串会报 ATTEMPT_TO_READ_AFTER_EOF 直接启动失败,
 // 必须整个键都不出现。
+func listenHostOf(cfg ManagedConfig) string {
+	if cfg.ListenHost == "" {
+		return "127.0.0.1"
+	}
+	return cfg.ListenHost
+}
+
 func renderServerConfig(cfg ManagedConfig, logDir, usersPath string) string {
 	return fmt.Sprintf(`<clickhouse>
     <logger>
@@ -323,7 +399,7 @@ func renderServerConfig(cfg ManagedConfig, logDir, usersPath string) string {
     <path>%s/</path>
     <tmp_path>%s/tmp/</tmp_path>
     <user_files_path>%s/user_files/</user_files_path>
-    <listen_host>127.0.0.1</listen_host>
+    <listen_host>%s</listen_host>
     <tcp_port>%d</tcp_port>
     <http_port>%d</http_port>
     <users_config>%s</users_config>
@@ -333,13 +409,16 @@ func renderServerConfig(cfg ManagedConfig, logDir, usersPath string) string {
     <max_concurrent_queries>32</max_concurrent_queries>
 </clickhouse>
 `, logDir, logDir, cfg.DataDir, cfg.DataDir, cfg.DataDir,
-		cfg.TCPPort, cfg.HTTPPort, usersPath)
+		listenHostOf(cfg), cfg.TCPPort, cfg.HTTPPort, usersPath)
 }
 
 // renderUsersConfig 生成 users.xml。
 //
-// 默认用户无密码但只允许回环访问,与 config.xml 里只绑 127.0.0.1 一致:
-// 内嵌存储的边界防护是"根本连不上",而不是"连上了但要密码"。
+// 密码只以 password_sha256_hex 落盘,明文不写文件。
+//
+// networks 必须跟着监听地址一起放开:ClickHouse 是"先看 networks 再看
+// 密码",networks 还是回环而客户端从别的机器连进来,报的是
+// "not in allowed networks" —— 那个信息看起来像密码配错了,能查很久。
 //
 // max_memory_usage 给上限,避免一条失控查询把整机内存吃光——这个界面
 // 允许用户自由组合过滤条件,一次没加时间范围的聚合就可能扫全表。
@@ -349,6 +428,23 @@ func renderUsersConfig(cfg ManagedConfig) string {
 	if mem <= 0 {
 		mem = 4 << 30 // 4GB
 	}
+
+	user := cfg.Username
+	if user == "" {
+		user = "default"
+	}
+
+	pwTag := "<password></password>"
+	if cfg.Password != "" {
+		sum := sha256.Sum256([]byte(cfg.Password))
+		pwTag = "<password_sha256_hex>" + hex.EncodeToString(sum[:]) + "</password_sha256_hex>"
+	}
+
+	networks := "                <ip>::1</ip>\n                <ip>127.0.0.1</ip>"
+	if !isLoopbackHost(listenHostOf(cfg)) {
+		networks = "                <ip>::/0</ip>\n                <ip>0.0.0.0/0</ip>"
+	}
+
 	return fmt.Sprintf(`<clickhouse>
     <profiles>
         <default>
@@ -358,17 +454,16 @@ func renderUsersConfig(cfg ManagedConfig) string {
         </default>
     </profiles>
     <users>
-        <default>
-            <password></password>
+        <%s>
+            %s
             <networks>
-                <ip>::1</ip>
-                <ip>127.0.0.1</ip>
+%s
             </networks>
             <profile>default</profile>
             <quota>default</quota>
-        </default>
+        </%s>
     </users>
     <quotas><default/></quotas>
 </clickhouse>
-`, mem, mem/2)
+`, mem, mem/2, user, pwTag, networks, user)
 }

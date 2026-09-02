@@ -46,8 +46,11 @@ func main() {
 		sflowListen   = flag.String("sflow-listen", fmt.Sprintf(":%d", collector.DefaultSFlowPort), "sFlow v5 监听地址")
 		netflowListen = flag.String("netflow-listen", fmt.Sprintf(":%d", collector.DefaultNetFlowPort), "NetFlow v5 监听地址")
 
-		chAddr    = flag.String("clickhouse-addr", "", "外部 ClickHouse 地址;留空则托管同目录下的 clickhouse 二进制")
-		chBin     = flag.String("clickhouse-bin", "", "clickhouse 二进制路径")
+		chAddr   = flag.String("clickhouse-addr", "", "外部 ClickHouse 地址;留空则托管同目录下的 clickhouse 二进制")
+		chBin    = flag.String("clickhouse-bin", "", "clickhouse 二进制路径")
+		chListen = flag.String("clickhouse-listen", "127.0.0.1",
+			"内嵌 ClickHouse 的监听地址;填 0.0.0.0 让别的节点写进来")
+		chUser    = flag.String("clickhouse-user", "default", "ClickHouse 账号")
 		retention = flag.Int("retention-days", 90, "明细数据保留天数")
 
 		ip2asnPath = flag.String("ip2asn", "", "ip2asn TSV 路径(.tsv 或 .tsv.gz),提供 ASN/国家/组织")
@@ -137,7 +140,17 @@ func main() {
 	}
 	defer mmdb.Close()
 
-	st, chStop, err := openStore(ctx, *chAddr, *chBin, *dataDir, *retention)
+	// ClickHouse 的密码只从环境变量取,不做命令行参数 —— 命令行参数会
+	// 出现在 ps 的输出里,任何本机账号都能看到。
+	chPass := os.Getenv("NTOP2BAN_CLICKHOUSE_PASSWORD")
+	if w := store.ListenWarning(*chListen, chPass); w != "" {
+		log.Println("注意:" + w)
+	}
+
+	st, chStop, err := openStore(ctx, storeOpts{
+		addr: *chAddr, bin: *chBin, dataDir: *dataDir, retentionDays: *retention,
+		listen: *chListen, username: *chUser, password: chPass,
+	})
 	if err != nil {
 		log.Fatalf("初始化存储失败: %v", err)
 	}
@@ -275,23 +288,37 @@ func startNetFlow(ctx context.Context, sink *enrichingSink, listen string) (stri
 }
 
 // openStore 打开存储。指定 -clickhouse-addr 连外部实例,否则托管子进程。
-func openStore(ctx context.Context, addr, bin, dataDir string, retentionDays int) (*store.Store, func(), error) {
+// storeOpts 是 openStore 的参数。摊成结构体是因为参数已经七个了,
+// 位置参数排错一个类型相同的(addr/bin/dataDir 全是 string)编译器不会说话。
+type storeOpts struct {
+	addr          string // 非空则连外部实例,不托管
+	bin           string
+	dataDir       string
+	retentionDays int
+	listen        string
+	username      string
+	password      string
+}
+
+func openStore(ctx context.Context, o storeOpts) (*store.Store, func(), error) {
 	noop := func() {}
 
-	if addr != "" {
+	if o.addr != "" {
 		st, err := store.Open(ctx, store.Config{
-			Addr: addr, Database: "ntop2ban",
-			AutoCreateDatabase: true, RetentionDays: retentionDays,
+			Addr: o.addr, Database: "ntop2ban",
+			Username: o.username, Password: o.password,
+			AutoCreateDatabase: true, RetentionDays: o.retentionDays,
 		})
 		if err != nil {
 			return nil, noop, err
 		}
-		log.Printf("已连接外部 ClickHouse %s", addr)
+		log.Printf("已连接外部 ClickHouse %s", o.addr)
 		return st, noop, nil
 	}
 
 	managed, err := store.StartManaged(ctx, store.ManagedConfig{
-		BinPath: bin, DataDir: filepath.Join(dataDir, "clickhouse"),
+		BinPath: o.bin, DataDir: filepath.Join(o.dataDir, "clickhouse"),
+		ListenHost: o.listen, Username: o.username, Password: o.password,
 	})
 	if err != nil {
 		return nil, noop, err
@@ -300,7 +327,8 @@ func openStore(ctx context.Context, addr, bin, dataDir string, retentionDays int
 
 	st, err := store.Open(ctx, store.Config{
 		Addr: managed.Addr(), Database: "ntop2ban",
-		AutoCreateDatabase: true, RetentionDays: retentionDays,
+		Username: managed.Username(), Password: managed.Password(),
+		AutoCreateDatabase: true, RetentionDays: o.retentionDays,
 	})
 	if err != nil {
 		_ = managed.Stop(10 * time.Second)
