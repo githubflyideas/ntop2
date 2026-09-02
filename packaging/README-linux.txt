@@ -13,8 +13,23 @@ ntop2ban —— 解压即跑
 
     http://<这台机器的地址>:8090
 
-第一次启动会慢一点:clickhouse 是自解压二进制,首次运行要把自己展开,
-需要大约 1GB 的空闲磁盘,耗时几十秒。之后每次启动就快了。
+跑不起来的话
+------------
+
+包里的 clickhouse 是官方定版构建,对系统有三条硬门槛:
+
+  glibc >= 2.4      比这更老(CentOS 5 一类)加载不了。
+  内核 >= 3.2       二进制的 ABI-tag 写着 3.2,内核比它旧时 ld.so 直接
+                    报 "FATAL: kernel too old" 拒绝加载。CentOS 6 的
+                    原厂内核是 2.6.32,卡在这一条。
+  CPU 有 SSE4.2     x86-64-v2;arm64 要 ARMv8.2。屏蔽了这些指令的虚拟机
+                    会 "Illegal instruction"。
+
+任何一条不满足,内嵌的 clickhouse 就用不了,改接一个外部实例:
+
+    sudo ./ntop2ban -iface eth0 -clickhouse-addr 192.168.1.10:9000
+
+ntop2ban 本身是静态编译的 Go 二进制,上面三条都不适用于它。
 
 常用参数
 --------

@@ -81,11 +81,15 @@ ChmodBPF 启动项就是为这个)。不想用 `sudo` 就把设备属主改成�
 macOS 上唯一真正缺的是 XDP —— 内核里没有可编程快路径这种东西,`-datasource
 xdp-native` 之类在 Mac 上不存在,只有 `bpf-device` 一级。
 
-`linux-amd64` 包里的 clickhouse 用的是官方 **amd64compat** 构建(纯 SSE2),
-不是默认的 amd64 构建。后者要求 x86-64-v2(SSE4.2/POPCNT),在较老的物理机和屏蔽了
-这些指令的虚拟机上一执行就 `Illegal instruction (core dumped)` —— 而那个
-错误完全指不到"换个 clickhouse 构建"这个方向。牺牲一点性能换普遍可运行,
-对单机部署是正确的取舍。
+Linux 大包里的 clickhouse 是官方**定版**构建(`packages.clickhouse.com/tgz/lts`,
+版本写在 Makefile 的 `CH_VERSION`),门槛是 **glibc 2.4**、CPU 要有 **SSE4.2**
+(x86-64-v2;arm64 要 ARMv8.2)。定版渠道没有 `amd64compat`,所以屏蔽了这些指令的
+虚拟机与很老的物理机上跑不了内嵌实例 —— 那种机器请用 `-clickhouse-addr` 接一个
+外部 ClickHouse,ntop2ban 自己是静态 Go 二进制,不受这些门槛影响。启动失败时进程
+会直接把原因和该走哪条路打出来。
+
+macOS 侧没有定版资产,继续用 `builds.clickhouse.com/master` 的自解压构建,它要
+glibc 2.25 —— 在 Mac 上无所谓,写在这里只是解释两个平台为什么不一样。
 
 ```bash
 sudo ./ntop2ban -iface eth0 -clickhouse-addr 127.0.0.1:9000 user=admin passwd=xxx
