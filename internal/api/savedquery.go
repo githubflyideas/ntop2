@@ -32,15 +32,36 @@ type SavedQuery struct {
 	From string `json:"from,omitempty"`
 	To   string `json:"to,omitempty"`
 
-	Metric  string `json:"metric"`
-	GroupBy string `json:"group_by"`
-	Limit   int    `json:"limit"`
+	// Metric/GroupBy 是单选年代的字段。界面已经改成多选,新记录写的是
+	// 下面的 Metrics/GroupBys —— 但这两个字段不能删:用户存过的查询不该
+	// 因为界面加了多选就打不开。normalize 负责两边互相补齐,所以旧记录
+	// 读得出来,新记录被旧版本的二进制读到也还能用第一个维度打开。
+	Metric  string `json:"metric,omitempty"`
+	GroupBy string `json:"group_by,omitempty"`
 
-	// Logic 是多个条件之间的关系:AND / OR。
+	// Metrics/GroupBys 是多选后的形态,顺序有意义(维度顺序决定结果表
+	// 的列顺序,指标顺序决定默认按哪个排序)。
+	Metrics  []string `json:"metrics,omitempty"`
+	GroupBys []string `json:"group_bys,omitempty"`
+
+	// Interval 是时间粒度(minute/hour/day),空表示不按时间分桶。
+	Interval string `json:"interval,omitempty"`
+	// Mode 空是聚合,detail 是明细行。
+	Mode string `json:"mode,omitempty"`
+	// Sort 是排序。零值表示交给引擎补默认值(按第一个指标降序)。
+	Sort query.Sort `json:"sort,omitempty"`
+
+	Limit int `json:"limit"`
+
+	// Logic 是「必须满足」那几条之间的关系:AND / OR。
 	Logic string `json:"logic"`
-	// Filters 是叶子条件列表。界面上的 Query Builder 只能产生这种平铺
-	// 结构,所以这里不需要存整棵条件树。
+	// Filters 是「必须满足」的叶子条件列表。界面上的 Query Builder 只能
+	// 产生这种平铺结构,所以这里不需要存整棵条件树。
 	Filters []query.Condition `json:"filters,omitempty"`
+	// Excludes 是「排除」块的叶子条件:任一条命中就排掉。存成单独一列
+	// 而不是把 NOT 拼进 Filters,是因为界面要能把它们还原回两块 ——
+	// 存拼好的树就得再写一个只用来读自己写出来的树的解析器。
+	Excludes []query.Condition `json:"excludes,omitempty"`
 
 	CreatedBy string    `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
@@ -84,6 +105,9 @@ func (qs *queryStore) load() ([]SavedQuery, error) {
 	var out []SavedQuery
 	if err := json.Unmarshal(b, &out); err != nil {
 		return nil, fmt.Errorf("保存的查询文件 %s 解析失败: %w", qs.path, err)
+	}
+	for i := range out {
+		out[i].normalize()
 	}
 	return out, nil
 }
@@ -156,12 +180,33 @@ func (qs *queryStore) del(name string) error {
 	return fmt.Errorf("没有名为 %q 的保存查询", name)
 }
 
+// normalize 在单选字段与多选字段之间互相补齐。
+//
+// 两个方向都要补:读旧记录时 GroupBys 是空的(那时候只有 GroupBy),
+// 写新记录时也要顺手填上单数字段,这样把二进制降级回旧版之后,存过的
+// 查询至少还能按第一个维度打开,而不是变成一条空白记录。
+func (sq *SavedQuery) normalize() {
+	if len(sq.GroupBys) == 0 && sq.GroupBy != "" {
+		sq.GroupBys = []string{sq.GroupBy}
+	}
+	if len(sq.Metrics) == 0 && sq.Metric != "" {
+		sq.Metrics = []string{sq.Metric}
+	}
+	if sq.GroupBy == "" && len(sq.GroupBys) > 0 {
+		sq.GroupBy = sq.GroupBys[0]
+	}
+	if sq.Metric == "" && len(sq.Metrics) > 0 {
+		sq.Metric = sq.Metrics[0]
+	}
+}
+
 // validate 校验一条保存查询。
 //
 // 关键在于复用 query.Query.Validate:字段名、运算符、指标、limit 上限
 // 的白名单只有一份。另写一套校验迟早与查询引擎不同步,表现为"能保存
 // 但一加载就报不支持",而那时用户已经把条件填完了。
 func (sq *SavedQuery) validate() error {
+	sq.normalize()
 	sq.Name = strings.TrimSpace(sq.Name)
 	if sq.Name == "" {
 		return fmt.Errorf("请给这条查询起个名字")
@@ -186,29 +231,45 @@ func (sq *SavedQuery) validate() error {
 	// 用一个假的时间范围拼出等价的 Query 交给引擎校验。时间范围本身
 	// 不在这里查:相对范围是前端解析的,绝对时间要到加载那一刻才成形。
 	probe := query.Query{
+		Mode:      sq.Mode,
 		TimeRange: query.TimeRange{From: time.Now().Add(-time.Hour), To: time.Now()},
-		GroupBy:   []string{sq.GroupBy},
-		Metrics:   []string{sq.Metric},
+		GroupBy:   sq.GroupBys,
+		Metrics:   sq.Metrics,
+		Interval:  sq.Interval,
+		Sort:      sq.Sort,
 		Limit:     sq.Limit,
 		Filters:   sq.condition(),
 	}
 	if err := probe.Validate(); err != nil {
 		return err
 	}
-	// Validate 会把 Limit 补成默认值,回写以便保存的就是实际生效的值。
-	sq.Limit = probe.Limit
+	// Validate 会把 Limit 与 Sort 补成默认值,回写以便保存的就是实际
+	// 生效的值 —— 否则界面加载回来时排序框是空的,而结果确实排过序。
+	sq.Limit, sq.Sort = probe.Limit, probe.Sort
 	return nil
 }
 
-// condition 把平铺的条件列表组装成 AST 的条件树。
+// condition 把两块平铺的条件列表组装成 AST 的条件树。
+//
+// 「排除」块固定编译成 NOT(OR(...)):它的语义是"任一条命中就排掉"。
+// 若让它跟着上面的 AND/OR 走,"排除 A 或 B"与"排除 A 且 B"在界面上
+// 根本读不出差别,而两者的结果差得很远。
 func (sq *SavedQuery) condition() query.Condition {
-	switch len(sq.Filters) {
+	must := flatten(sq.Filters, query.Op(sq.Logic))
+	if len(sq.Excludes) == 0 {
+		return must
+	}
+	return query.AndNot(must, flatten(sq.Excludes, query.OpOr))
+}
+
+func flatten(list []query.Condition, op query.Op) query.Condition {
+	switch len(list) {
 	case 0:
 		return query.Condition{}
 	case 1:
-		return sq.Filters[0]
+		return list[0]
 	default:
-		return query.Condition{Op: query.Op(sq.Logic), Conditions: sq.Filters}
+		return query.Condition{Op: op, Conditions: list}
 	}
 }
 

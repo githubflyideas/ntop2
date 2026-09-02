@@ -243,3 +243,99 @@ func TestSaveIsAtomic(t *testing.T) {
 		}
 	}
 }
+
+// TestNormalizeMigratesSingularFields 界面改成多选之前存下来的记录只有
+// 单数的 metric / group_by。多选上线后这些记录必须还能加载 —— 用户不会
+// 觉得"我升级了一版,所以我存的查询打不开了"是合理的。
+func TestNormalizeMigratesSingularFields(t *testing.T) {
+	old := SavedQuery{Name: "老记录", Range: "1h", Metric: "packets", GroupBy: "dst_ip", Limit: 10}
+	if err := old.validate(); err != nil {
+		t.Fatalf("旧记录应当仍然合法: %v", err)
+	}
+	if len(old.GroupBys) != 1 || old.GroupBys[0] != "dst_ip" {
+		t.Errorf("group_by 应迁移到 group_bys: %v", old.GroupBys)
+	}
+	if len(old.Metrics) != 1 || old.Metrics[0] != "packets" {
+		t.Errorf("metric 应迁移到 metrics: %v", old.Metrics)
+	}
+
+	// 反方向也要补:新记录被旧版本的二进制读到时,至少还能按第一个
+	// 维度打开,而不是变成一条空白记录。
+	fresh := SavedQuery{Name: "新记录", Range: "1h",
+		GroupBys: []string{"src_ip", "dst_port"}, Metrics: []string{"bytes", "flows"}, Limit: 10}
+	if err := fresh.validate(); err != nil {
+		t.Fatalf("多选记录应当合法: %v", err)
+	}
+	if fresh.GroupBy != "src_ip" || fresh.Metric != "bytes" {
+		t.Errorf("单数字段应回填成第一项: group_by=%q metric=%q", fresh.GroupBy, fresh.Metric)
+	}
+}
+
+// TestExcludesCompileToNot「排除」块的语义是任一条命中就排掉,
+// 也就是 NOT(OR(...)),而不是跟着上面那个 AND/OR 选择走。
+func TestExcludesCompileToNot(t *testing.T) {
+	q := validSaved("带排除的")
+	q.Logic = "OR"
+	q.Excludes = []query.Condition{
+		{Field: "src_ip", Operator: query.OpCIDR, Value: "192.168.1.0/24"},
+		{Field: "dst_port", Operator: query.OpEq, Value: 5353},
+	}
+	if err := q.validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	c := q.condition()
+	if c.Op != query.OpAnd || len(c.Conditions) != 2 {
+		t.Fatalf("应该是 AND(必须满足, NOT(排除)): %+v", c)
+	}
+	neg := c.Conditions[1]
+	if neg.Op != query.OpNot || len(neg.Conditions) != 1 {
+		t.Fatalf("第二项应该是 NOT: %+v", neg)
+	}
+	if neg.Conditions[0].Op != query.OpOr {
+		t.Errorf("排除块内部应该是 OR(任一命中就排掉),得到 %q", neg.Conditions[0].Op)
+	}
+}
+
+// TestSavedDetailModeRejectsDimensions 明细模式与分组维度互斥。这里靠的
+// 是引擎那份校验,不是另写一遍 —— 拒绝的理由应该只有一处。
+func TestSavedDetailModeRejectsDimensions(t *testing.T) {
+	q := validSaved("明细")
+	q.Mode = query.ModeDetail
+	if err := q.validate(); err == nil {
+		t.Error("明细模式带着分组维度应被拒绝")
+	}
+
+	q = SavedQuery{Name: "明细", Range: "1h", Mode: query.ModeDetail, Limit: 20}
+	if err := q.validate(); err != nil {
+		t.Fatalf("干净的明细查询应当合法: %v", err)
+	}
+	if q.Sort.Field != "ts" || !q.Sort.Desc {
+		t.Errorf("明细模式的默认排序应回写成 ts 降序,得到 %+v", q.Sort)
+	}
+}
+
+// TestValidateWritesBackDefaultSort 加载回界面时排序框不能是空的 ——
+// 结果确实排过序,界面显示"未排序"就等于骗人。
+func TestValidateWritesBackDefaultSort(t *testing.T) {
+	q := validSaved("默认排序")
+	q.Metrics, q.Metric = []string{"packets", "bytes"}, ""
+	if err := q.validate(); err != nil {
+		t.Fatal(err)
+	}
+	if q.Sort.Field != "packets" || !q.Sort.Desc {
+		t.Errorf("应默认按第一个指标降序,得到 %+v", q.Sort)
+	}
+}
+
+// TestValidateRejectsBadInterval 时间粒度也走引擎的白名单。
+func TestValidateRejectsBadInterval(t *testing.T) {
+	q := validSaved("粒度")
+	q.Interval = "week"
+	if err := q.validate(); err == nil {
+		t.Error("week 不是支持的时间粒度,应被拒绝")
+	}
+	q.Interval = "hour"
+	if err := q.validate(); err != nil {
+		t.Errorf("hour 应当合法: %v", err)
+	}
+}
