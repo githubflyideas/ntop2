@@ -52,6 +52,8 @@ func main() {
 			"内嵌 ClickHouse 的监听地址;填 0.0.0.0 让别的节点写进来")
 		chUser    = flag.String("clickhouse-user", "default", "ClickHouse 账号")
 		retention = flag.Int("retention-days", 90, "明细数据保留天数")
+		nodeID    = flag.Uint("node-id", 0,
+			"本节点编号。多个节点往同一个 ClickHouse 写时各给一个,否则分不清数据来自哪台机器")
 
 		ip2asnPath = flag.String("ip2asn", "", "ip2asn TSV 路径(.tsv 或 .tsv.gz),提供 ASN/国家/组织")
 		mmdbPath   = flag.String("mmdb", "", "GeoLite2-City mmdb 路径,额外提供城市与区域;也可在界面上传")
@@ -163,7 +165,11 @@ func main() {
 	}
 
 	// 富化包在存储前面:sink 收到 flow 先富化再写库。
-	sink := &enrichingSink{st: st, en: enrich.NewEnricher(asnDB, mmdb, cityDB)}
+	sink := &enrichingSink{st: st, en: enrich.NewEnricher(asnDB, mmdb, cityDB),
+		nodeID: uint32(*nodeID)}
+	if *nodeID != 0 {
+		log.Printf("本节点编号 %d —— 界面上按 device_id 分组即可区分各节点", *nodeID)
+	}
 
 	var inputLabels []string
 
@@ -223,11 +229,34 @@ func main() {
 type enrichingSink struct {
 	st *store.Store
 	en *enrich.Enricher
+
+	// nodeID 盖在本机采集的记录上。
+	//
+	// 一台机器布 ClickHouse、别的节点写进来是正常部署形态,但本机采集的
+	// 记录原来 device_id 恒为 0 —— 几个节点写进同一张表,数据就分不清是
+	// 谁的了,而且不报错。sFlow/NetFlow 的记录自带上报设备身份,不覆盖。
+	nodeID uint32
 }
 
 func (s *enrichingSink) Append(ctx context.Context, batch []flow.Flow) error {
+	s.stamp(batch)
 	s.en.Apply(batch)
 	return s.st.Append(ctx, batch)
+}
+
+// stamp 给还没有设备身份的记录盖上本节点编号。
+func (s *enrichingSink) stamp(batch []flow.Flow) {
+	if s.nodeID == 0 {
+		return
+	}
+	for i := range batch {
+		if batch[i].DeviceID == 0 {
+			batch[i].DeviceID = s.nodeID
+		}
+		if batch[i].SensorID == 0 {
+			batch[i].SensorID = s.nodeID
+		}
+	}
 }
 
 type localConfig struct {
