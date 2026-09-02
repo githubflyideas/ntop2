@@ -277,10 +277,11 @@ db-ip 定位到山东济南 —— 保留 ASN 库的 country 会产出
 
 ## 界面
 
-五个视图:
+七个视图:
 
 | 视图 | 内容 |
 |---|---|
+| **实时** | 内存里刚收到的几百条记录、每个输入源的到达计数,回答「现在到底有没有包进来」;不查 ClickHouse |
 | **Dashboard** | KPI 卡片(总流量/包/流/活跃源 IP/目的端口)、流量趋势(堆叠面积)、Top Talkers / Destinations / 端口 / ASN、应用与协议构成(甜甜圈) |
 | **Hosts** | Top 源/目的主机,点 IP 下钻到该主机的对端、端口、应用、国家、ASN、协议 |
 | **Conversations** | 源 ↔ 目的 的流量对,两端都可点击下钻 |
@@ -302,6 +303,19 @@ Explorer 是查询构造器:分组维度与统计指标都可以多选,时间粒
 切到明细模式则不聚合,直接列原始流记录的 25 个字段。可以点「查看 SQL」看
 后端究竟生成了什么 —— 组合出复杂查询而结果不对时,没有这个入口只能靠日志
 猜。
+
+**实时**页只回答一个问题:现在有包进来吗。它读的是进程内存里刚收到的那几百
+条记录,不查 ClickHouse —— 中间隔着攒批、INSERT 与 part 可见,几秒的空窗里
+「还没落库」和「根本没数据」在 Explorer 上长得一样,写库失败了更是永远一样。
+所以这一页有数而 Explorer 没数,本身就是结论:采集是好的,写库出了问题。
+列表两秒增量刷新一次,只取比游标新的记录,不重画整张表。
+
+加上 `-dns-resolve` 之后,表格里的 IP 后面会跟一个域名。**域名是注解,不替换
+IP** —— IP 才是能拿去过滤、下钻、跟别的工具对照的标识,域名只帮人认出这是哪
+台机器。反查在显示时按需做,不写进数据库、也不在采集路径上:进程内起一个纯
+转发的解析器,答案缓存 300 秒(查不到的也缓存),浏览器侧再记一层,所以同一
+个地址一页里只问一次、一个进程里 300 秒内只向上游问一次。默认读
+`/etc/resolv.conf`,也可以用 `-dns-upstream` 指一个。
 
 设置页可以填一份**全局排除网段**清单(默认「两端都在清单内」才排除),它
 在服务端叠进每一条查询,所有视图与卡片共用同一个定义 —— 内网互访这类噪音
@@ -393,6 +407,9 @@ TABLE / MATERIALIZED VIEW IF NOT EXISTS`(schema 是存储层的实现细节,不�
 | `-clickhouse-user` | `default` | ClickHouse 账号。密码走环境变量 `NTOP2BAN_CLICKHOUSE_PASSWORD` |
 | `-node-id` | `0` | 本节点编号。多个节点写同一个 ClickHouse 时各给一个 |
 | `-retention-days` | `90` | 明细数据保留天数,靠 ClickHouse 的 TTL 落地 |
+| `-dns-resolve` | 关 | 显示时按需反查 IP 的域名,结果只用于展示,不入库 |
+| `-dns-upstream` | 空(读 `/etc/resolv.conf`) | 反查用的上游 DNS,`host` 或 `host:port` |
+| `-dns-ttl` | `300s` | 反查结果的缓存时长,查不到的结果同样缓存这么久 |
 | `-ip2asn` | 空 | ip2asn TSV(`.tsv` / `.tsv.gz`),提供 ASN / 国家 / 组织 |
 | `-mmdb` | 空 | GeoLite2-City mmdb,额外提供城市与区域;也可在界面上传 |
 | `-version` | — | 打印版本后退出 |
@@ -501,6 +518,7 @@ make bpf-verify  # 重新编译并与库里的 .o 比对(CI 跑这个)
 - [x] 写入时富化(ip2asn / DB-IP 一键在线同步,IANA 服务名分类)
 - [x] Query AST 与查询引擎(字段白名单、强制时间范围与 limit)
 - [x] Dashboard / Hosts / Conversations / ASN-Country / Geo Map / Explorer
+- [x] 实时页(读内存,不查库)与显示时 DNS 反查(300 秒缓存)
 - [x] 认证:启动参数 + 内存会话
 - [x] Saved Query(查询条件保存复用)
 - [ ] Dashboard 自定义(卡片增删与布局)
