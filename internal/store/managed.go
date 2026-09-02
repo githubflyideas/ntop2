@@ -185,18 +185,47 @@ func (m *Managed) explainEarlyExit(werr error) error {
 		detail = "正常退出"
 	}
 
-	// SIGILL 几乎总是同一个原因,直接给出解决办法而不是让用户去搜。
-	hint := ""
-	if strings.Contains(detail, "illegal instruction") {
-		hint = "\n\n这台机器的 CPU 不支持该 clickhouse 构建所需的指令集" +
-			"(常见于较老的物理机或屏蔽了 SSE4.2 的虚拟机)。" +
-			"\n请换用官方的兼容构建:" +
-			"\n  curl -L -o clickhouse https://builds.clickhouse.com/master/amd64compat/clickhouse" +
-			"\n  chmod +x clickhouse"
+	tail := m.tailStderr()
+	return fmt.Errorf("store: clickhouse 启动即退出(%s)%s\n%s",
+		detail, startupHint(detail, tail), tail)
+}
+
+// ltsFallbackVersion 是包里那个 clickhouse 的版本,和 Makefile 的
+// CH_VERSION 必须一致 —— 提示里要让用户能照着下同一个版本。
+// internal/store 的测试会 grep Makefile 钉住这一点。
+const ltsFallbackVersion = "26.3.24.4"
+
+// startupHint 从退出状态与 stderr 尾部认出几种"一看就知道该怎么办"的
+// 启动失败,给出可以直接照抄的命令。
+//
+// 为什么要看 stderr 而不是只看退出状态:动态链接失败时 ld.so 把原因写在
+// stderr,而进程的退出码只是一个平淡的 1。原来只判断
+// "signal: illegal instruction" 的那个分支于是永远不命中,glibc 太旧的
+// 机器上用户只能拿到一句"启动即退出(exit status 1)"。
+func startupHint(detail, stderrTail string) string {
+	all := detail + "\n" + stderrTail
+
+	// glibc 太旧:ld.so 报 `version \`GLIBC_2.25\' not found`。
+	if strings.Contains(all, "GLIBC_") && strings.Contains(all, "not found") {
+		return "\n\n这台机器的 glibc 比包里的 clickhouse 要求的旧。" +
+			"\n包里那个是官方定版构建(" + ltsFallbackVersion + "),门槛是 glibc 2.4;" +
+			"\n如果这里还是不过,说明系统实在太老,请改用外部 ClickHouse:" +
+			"\n  ./ntop2ban -clickhouse-addr <那台机器的 IP>:9000 ..." +
+			"\n(ntop2ban 自己是静态二进制,不受 glibc 影响。)"
 	}
 
-	return fmt.Errorf("store: clickhouse 启动即退出(%s)%s\n%s",
-		detail, hint, m.tailStderr())
+	// CPU 指令集不够:定版构建要求 x86-64-v2(SSE4.2/POPCNT)。
+	if strings.Contains(all, "illegal instruction") {
+		return "\n\n这台机器的 CPU 不支持该 clickhouse 构建所需的指令集" +
+			"(定版构建要求 SSE4.2/x86-64-v2,arm64 要求 ARMv8.2)。" +
+			"\n官方的兼容构建可以试:" +
+			"\n  curl -L -o clickhouse https://builds.clickhouse.com/master/amd64compat/clickhouse" +
+			"\n  chmod +x clickhouse" +
+			"\n那个构建对 glibc 的要求更高(2.25),两头都不满足就只能用外部" +
+			"\nClickHouse:./ntop2ban -clickhouse-addr <IP>:9000 ..."
+	}
+
+	return ""
 }
 
 // tailStderr 读 stderr 日志的尾部。
