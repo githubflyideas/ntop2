@@ -185,6 +185,50 @@ func serviceName(protocol uint8, port uint16) (string, bool) {
 	return "", false
 }
 
+// ephemeralFloor 临时端口范围的下界。
+//
+// Linux 的 net.ipv4.ip_local_port_range 默认是 32768-60999,macOS 与
+// Windows 从 49152 起。取小的那个更保守:宁可多认几个端口是临时端口,
+// 也不要把客户端的随机端口当成服务端口。
+//
+// 落在这个范围里又确实是服务的端口(wireguard 51820、transmission
+// 51413、syncthing 22000 之类)靠精确表命中,走不到这个判断。
+const ephemeralFloor = 32768
+
+// servicePort 在两个都不认识的端口里挑出更像服务端口的那个。
+//
+// 为什么需要它:聚合的 key 是有方向的(src,dst,sport,dport),所以一次
+// 会话在库里是两条流 —— 去程 dst_port=8899、回程 dst_port 是客户端那个
+// 随机端口。只看目的端口的话,回程会被归成 "tcp/54321",于是 Top
+// Application 里堆满一堆各出现一次的临时端口条目,真正的 tcp/8899
+// 反而只算到了一半的字节。
+//
+// 挑的规则是:一头在临时端口范围里、另一头不在,就取不在的那头;两头
+// 都在或都不在,取较小的那个。这样同一次会话的两条流必然得到同一个
+// 名字,方向不再影响结果。代价是客户端偶尔会从一个低位端口发起连接
+// (比如源 1025 连目的 9999),那时会误判成 1025;这种情形在现代系统上
+// 很少见,换回程不再污染 Top Application 是值得的。
+func servicePort(srcPort, dstPort uint16) uint16 {
+	if dstPort == 0 {
+		return srcPort
+	}
+	if srcPort == 0 {
+		return dstPort
+	}
+	srcEph := srcPort >= ephemeralFloor
+	dstEph := dstPort >= ephemeralFloor
+	if srcEph != dstEph {
+		if srcEph {
+			return dstPort
+		}
+		return srcPort
+	}
+	if srcPort < dstPort {
+		return srcPort
+	}
+	return dstPort
+}
+
 // Classify 推断应用。
 //
 // 先看目的端口再看源端口:客户端的源端口是随机高位端口,目的端口才是
@@ -193,7 +237,8 @@ func serviceName(protocol uint8, port uint16) (string, bool) {
 // 两个端口都不认识时返回 "tcp/12345" 这种形式而不是空字符串或
 // "unknown":空字符串会让 Top Application 里出现一个匿名的巨大条目,
 // 而带端口号的形式仍然可以下钻——用户看到 "tcp/9999" 至少知道该去查
-// 那个端口是什么。
+// 那个端口是什么。端口号取 servicePort 挑出来的那个,而不是一律取
+// 目的端口。
 func Classify(protocol uint8, srcPort, dstPort uint16) string {
 	prefix := ""
 	switch protocol {
@@ -227,11 +272,12 @@ func Classify(protocol uint8, srcPort, dstPort uint16) string {
 	if name, ok := serviceName(protocol, srcPort); ok {
 		return name
 	}
+	port := servicePort(srcPort, dstPort)
 	// 端口 0 出现在畸形包或非端口协议上,不该拼成 "tcp/0"
-	if dstPort == 0 {
+	if port == 0 {
 		return prefix
 	}
-	return prefix + "/" + itoa(dstPort)
+	return prefix + "/" + itoa(port)
 }
 
 func itoa(v uint16) string {

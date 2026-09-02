@@ -409,3 +409,42 @@ func TestServiceNameIgnoresNonPortProtocols(t *testing.T) {
 		}
 	}
 }
+
+// TestClassifyUnknownPortIsDirectionIndependent 聚合的 key 带方向,
+// 一次会话在库里是两条流。两条流必须归到同一个应用名,否则回程会
+// 变成 "tcp/<客户端随机端口>",Top Application 里堆满只出现一次的
+// 临时端口条目,真正那个服务反而只算到一半字节。
+func TestClassifyUnknownPortIsDirectionIndependent(t *testing.T) {
+	out := Classify(6, 54321, 8899)
+	back := Classify(6, 8899, 54321)
+	if out != "tcp/8899" || back != "tcp/8899" {
+		t.Errorf("去程 %q 回程 %q,都应该是 tcp/8899", out, back)
+	}
+	if got, want := Classify(17, 60000, 12345), "udp/12345"; got != want {
+		t.Errorf("udp 去程 = %q, want %q", got, want)
+	}
+	if got, want := Classify(17, 12345, 60000), "udp/12345"; got != want {
+		t.Errorf("udp 回程 = %q, want %q", got, want)
+	}
+}
+
+// TestServicePortTieBreaksOnLowerPort 两头都在临时端口范围里、或者
+// 两头都不在时,没有别的线索可用,取较小的那个 —— 关键是这个规则对
+// 调换顺序给出同一个答案。
+func TestServicePortTieBreaksOnLowerPort(t *testing.T) {
+	cases := [][3]uint16{
+		{50000, 60000, 50000}, // 都是临时端口
+		{1234, 5678, 1234},    // 都不是
+		{0, 8899, 8899},       // 一头是 0
+		{8899, 0, 8899},
+	}
+	for _, c := range cases {
+		if got := servicePort(c[0], c[1]); got != c[2] {
+			t.Errorf("servicePort(%d, %d) = %d, want %d", c[0], c[1], got, c[2])
+		}
+		if got := servicePort(c[1], c[0]); got != c[2] {
+			t.Errorf("servicePort(%d, %d) = %d, want %d(应与调换前一致)",
+				c[1], c[0], got, c[2])
+		}
+	}
+}
