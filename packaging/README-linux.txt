@@ -70,6 +70,9 @@ CAP_NET_RAW/CAP_NET_ADMIN。只收 sFlow/NetFlow 的话不需要 root。
 明细模式直接看原始流记录;设置页可以填一份全局排除网段清单,填了之后所
 有视图都不再算那部分流量,内网互访这类噪音只需要写一次。
 
+本机抓包起来没起来、上传方向有没有采到,不用去翻日志:界面「设置」页里有
+一块采集自检,用人话写着实际状态和出了问题的后果。
+
 ntop2ban 只做观测与统计,不封禁任何东西。封禁是 xdp-ban 的事。
 
 完整文档:https://github.com/githubflyideas/ntop2ban
