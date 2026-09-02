@@ -135,6 +135,9 @@ svg{display:block;width:100%;height:auto}
 .chk{display:inline-flex;align-items:center;gap:5px;color:var(--dim);font-size:14px}
 /* 明细模式一行有二十多列,不给横向滚动的话表格会把整个面板撑破。 */
 .scroll{overflow-x:auto}
+textarea{width:100%;background:#0f1520;color:var(--fg);border:1px solid var(--line);
+ border-radius:6px;padding:9px 11px;font-size:14px;resize:vertical;
+ font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
  border-radius:6px;font-family:ui-monospace,Menlo,monospace;font-size:13.5px;
  overflow-x:auto;white-space:pre-wrap;color:var(--dim)}
@@ -337,6 +340,25 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
       <div class="panel">
         <h2>输入源与存储</h2>
         <div id="set-sys"></div>
+
+        <h2 style="margin-top:16px">全局排除网段</h2>
+        <p class="hint">一行一个。填在这里的网段会被加到每一次查询上 ——
+          Dashboard 的每张卡片与 Explorer 一起生效,不用在每个地方各加一遍。
+          想临时看被排掉的流量,去 Explorer 勾「包含被全局排除的网段」,
+          不必回来把清单删了再建回来。</p>
+        <textarea id="ex-list" rows="5" placeholder="192.168.1.0/24
+10.0.0.0/8
+fd00::/8"></textarea>
+        <div class="bar" style="margin:8px 0 0">
+          <label class="lb">排除方式</label>
+          <select id="ex-match">
+            <option value="both">两端都在清单里才排</option>
+            <option value="either">任一端在清单里就排</option>
+          </select>
+          <button class="act" id="ex-save">保存</button>
+          <span class="hint" id="ex-msg" style="margin:0"></span>
+        </div>
+        <p class="hint" id="ex-note" style="margin:6px 0 0"></p>
       </div>
     </div>
   </section>
@@ -1325,6 +1347,43 @@ $('#e-interval').onchange=syncSort;
 $('#e-run').onclick=runExplore;
 $('#e-explain').onclick=explainExplore;
 
+// --- 全局排除网段 ---
+//
+// 清单存在服务端(DataDir/settings.json)而不是浏览器本地:它要参与每一次
+// 查询,而查询是在服务端编译的;换台电脑打开也还在。
+function exMsg(m, bad){
+  const el=$('#ex-msg');
+  el.textContent=m||'';
+  el.style.color = bad ? '#ff9c9c' : 'var(--green)';
+}
+
+async function loadExcludes(){
+  let d;
+  try { d = await api('/api/v1/settings'); } catch(e){ exMsg(e.message, true); return; }
+  if(!d) return;
+  const st = d.settings || {};
+  $('#ex-list').value = (st.exclude_cidrs||[]).join('\n');
+  $('#ex-match').value = st.exclude_match || 'both';
+  $('#ex-note').textContent = '最多 ' + (d.max_exclude_cidrs||32) + ' 条。'
+    + '两端都在清单里才排,去掉的正好是内网互访那部分噪音;改成"任一端在"会把'
+    + '内网机器访问外网的流量也一起排掉,那几乎是全部有效流量。';
+  // 设置文件坏掉时后端照样返回零值加一句 warning —— 查询不会因此失败,
+  // 但界面必须说出来,否则用户看到的是一份空清单,以为自己从没配过。
+  if(d.warning) exMsg(d.warning, true); else exMsg('');
+}
+
+async function saveExcludes(){
+  const list = $('#ex-list').value.split('\n').map(x=>x.trim()).filter(Boolean);
+  try { await api('/api/v1/settings/save', {exclude_cidrs:list, exclude_match:$('#ex-match').value}); }
+  catch(e){ exMsg(e.message, true); return; }
+  // 保存完回读一次:后端会把 10.1.2.3/8 规范化成 10.0.0.0/8,不回读的话
+  // 框里留着的还是原文,而实际生效的是另一个东西。
+  await loadExcludes();
+  exMsg('已保存,下一次查询就会生效');
+}
+
+$('#ex-save').onclick=()=>saveExcludes().catch(e=>exMsg(e.message,true));
+
 let SYNC_TIMER = null;
 
 async function loadSources(){
@@ -1464,7 +1523,7 @@ function load(tab){
   }
   const f={dash:loadDash,hosts:loadHosts,conv:loadConv,geo:loadGeo,
            explore:()=>{},
-           settings:async()=>{ await loadOverview(); await loadSources(); }}[tab];
+           settings:async()=>{ await loadOverview(); await loadSources(); await loadExcludes(); }}[tab];
   if(!f) return;
   Promise.resolve(f())
     // 隐藏的 section 宽度是 0,在里面初始化的图会被画成一条线。
