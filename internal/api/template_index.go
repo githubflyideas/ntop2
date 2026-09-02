@@ -143,6 +143,15 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
  overflow-x:auto;white-space:pre-wrap;color:var(--dim)}
 .ok{color:var(--green)}
 .warn{color:var(--amber)}
+/* 自检结论:一条一行,左边一道竖线按结论上色。用竖线而不是图标,是因为
+   这几句话本身就是结论,图标只会让人先去猜图标的意思。 */
+.fnd{border-left:3px solid var(--line);padding:2px 0 2px 11px;margin:0 0 11px}
+.fnd:last-child{margin-bottom:0}
+.fnd.l-ok{border-left-color:var(--green)}
+.fnd.l-warn{border-left-color:var(--amber)}
+.fnd.l-info{border-left-color:var(--cyan)}
+.fnd .t{font-weight:600;font-size:14.5px}
+.fnd .d{font-size:13.5px;color:var(--dim);margin-top:3px;line-height:1.55}
 .src{border:1px solid var(--line);border-radius:7px;padding:11px 13px;margin-bottom:8px}
 .src .top{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .src .nm{font-weight:600;font-size:14.5px}
@@ -342,6 +351,16 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
         <h2>输入源与存储</h2>
         <div id="set-sys"></div>
       </div>
+    </div>
+    <!-- 采集自检单独占一整行,而且放在排除清单前面:一个人打开设置页最
+         常带着的问题是"我的数字对不对",这一块直接回答它。放在这里而不是
+         「输入源与存储」里面,是因为那一栏说的是"配了什么",这一块说的是
+         "实际采到了什么"——两者经常不一致,恰恰是不一致的时候最要紧。 -->
+    <div class="panel" style="margin-top:12px">
+      <h2>采集自检</h2>
+      <p class="hint">这几句话说的是本机抓包实际的状态,不需要懂 eBPF 也能读。
+        刷新页面即更新。</p>
+      <div id="set-capture"></div>
     </div>
     <!-- 排除清单单独占一整行:它挤在右边那个窄栏里时,一个填网段的多行
          文本框只有半屏宽,而右半屏是空的 —— 越长的网段越难看清自己填了
@@ -845,6 +864,8 @@ async function loadOverview(){
     + row('磁盘(未压缩)', (st.uncompressed_gb||0).toFixed(2)+' GB')
     + '</tbody></table>';
 
+  renderCapture(d.capture);
+
   // 没有 mmdb 时城市视图给出原因,而不是显示一张空表 ——
   // 空表让人以为程序坏了。
   const cityHint = $('#g-city-hint');
@@ -857,6 +878,22 @@ async function loadOverview(){
   return d;
 }
 function row(k,v){ return '<tr><td style="color:var(--dim)">'+k+'</td><td>'+v+'</td></tr>'; }
+
+// renderCapture 只做排版。结论与 level 都是服务端算好的 ——
+// 判断逻辑在 Go 的 datasource.Explain 里,那边有单元测试盯着,
+// 搬到这里就只能靠肉眼看截图了。
+function renderCapture(c){
+  const box = $('#set-capture');
+  if(!box) return;
+  c = c || {};
+  const fs = c.findings || [];
+  if(!fs.length){ box.innerHTML = '<p class="hint">没有自检信息。</p>'; return; }
+  let h = fs.map(f =>
+    '<div class="fnd l-'+esc(f.level||'info')+'">'
+    + '<div class="t">'+esc(f.title)+'</div>'
+    + '<div class="d">'+esc(f.detail)+'</div></div>').join('');
+  box.innerHTML = h;
+}
 
 async function loadKPI(){
   const q = ast({limit:1, metrics:['bytes','packets','flows','observed_bytes','uniq_src_ip','uniq_dst_port'],
