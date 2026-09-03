@@ -272,6 +272,7 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
       <p class="hint">颜色深浅是该国流量占比(对数刻度)。点一个国家会加成全局过滤条件;滚轮缩放,拖动平移</p>
       <div id="g-map" class="ec map"></div>
     </div>
+    <p class="hint" id="g-why"></p>
     <div class="grid g2">
       <div class="panel"><h2>Top 源国家</h2><div id="g-srcc"></div></div>
       <div class="panel"><h2>Top 目的国家</h2><div id="g-dstc"></div></div>
@@ -425,6 +426,9 @@ const PROTO = {1:'ICMP',2:'IGMP',6:'TCP',17:'UDP',41:'IPv6',47:'GRE',50:'ESP',
   51:'AH',58:'ICMPv6',89:'OSPF',132:'SCTP'};
 function protoLabel(v){ return PROTO[Number(v)] || ('协议 '+v); }
 let FIELDS = null, DRILL = null;
+// 富化库的状态。地图页要靠它解释"为什么一屏都是(未知)",而这句话
+// 只有服务端知道答案。
+let ENRICH = null;
 
 function showErr(m){const e=$('#err');e.textContent=m||'';e.style.display=m?'block':'none';}
 
@@ -569,14 +573,20 @@ async function topTable(el, groupBy, opts){
   const max = Math.max.apply(null, d.rows.map(r=>Number(r[1])||0)) || 1;
   let h='<table><tbody>';
   for(const r of d.rows){
-    const label = r[0], val = Number(r[1])||0;
+    // label 一律先转成字符串:ASN 这类数字维度 JSON 解出来是 number,
+    // 拿它跟 '0' 比较永远不相等,界面上就会出现一个点得动的 "AS0"。
+    const label = r[0]==null ? '' : String(r[0]), val = Number(r[1])||0;
     const pct = (val/max*100).toFixed(1);
     // 空值统一显示成"(未知)":富化库缺这一条时 label 是空字符串,
     // 直接渲染出来就是一行只有数字、名字那格空白的表,看着像界面坏了。
     // 空值也不给点击 —— 按空字符串过滤只会得到"未知的那一堆",没有意义。
-    const blank = String(label)==='';
-    const disp = opts.fmt ? opts.fmt(label)
-               : (blank ? '<span style="color:var(--dim2)">(未知)</span>' : esc(label));
+    //
+    // opts.blank 是给"用某个具体取值表示未知"的维度用的(ASN 的 0)。
+    // 它比 opts.fmt 优先:两边各写一遍未知的样子,就会出现同一页上
+    // 既有"(未知)"又有"未知"又有"不知道"的三种说法。
+    const blank = label==='' || (opts.blank ? !!opts.blank(label) : false);
+    const disp = blank ? '<span style="color:var(--dim2)">(未知)</span>'
+               : (opts.fmt ? opts.fmt(label) : esc(label));
     // drill 跳到 Hosts 页展开这个主机的构成;filter 只是把它加成全局
     // 过滤条件。两者不能混用一个属性:国家、ASN 这类维度没有"主机详情"
     // 可展开,点过去会是一屏用 country 当 IP 查出来的空表。
@@ -838,6 +848,10 @@ async function donut(el, groupBy, opts){
 // 流量地图。底图 feature 名就是 ISO alpha-2 码,与查询结果的 country
 // 取值直接对齐(理由见 tools/genworld/main.go)。
 let MAP_READY = null;
+// 底图里那份 ISO 码→中文名的对照表。地图的 tooltip 与国家榜单共用一份:
+// 榜单只写"GB"的话,地图上涂色的那块到底是哪个国家全靠猜 —— 有人会
+// 把英国看成法国。
+let MAP_ZH = null;
 
 function ensureMap(){
   // 底图 0.4MB,只在真的要画地图时才取,而且只取一次。放在页面加载时
@@ -849,6 +863,7 @@ function ensureMap(){
         echarts.registerMap('world', geo);
         const zh={};
         for(const f of geo.features) zh[f.properties.name]=f.properties.zh||f.properties.en||f.properties.name;
+        MAP_ZH = zh;
         return zh;
       })
       .catch(e=>{ MAP_READY=null; throw e; });
@@ -947,11 +962,15 @@ async function loadOverview(){
   DNS.enabled = !!(d.dns && d.dns.enabled);
   renderDNSStatus(d.dns);
 
-  // 没有 mmdb 时城市视图给出原因,而不是显示一张空表 ——
-  // 空表让人以为程序坏了。
+  // 没有城市库时给出原因,而不是显示一张空表 —— 空表让人以为程序坏了。
+  //
+  // 判断条件是 city_ready 而不是 mmdb_loaded:城市可以来自 DB-IP City,
+  // 只看 GeoLite2 会在同步了 DB-IP 之后仍然叫人去上传 GeoLite2,
+  // 而那张卡片其实是有数据的。
+  ENRICH = en;
   const cityHint = $('#g-city-hint');
-  if(!en.mmdb_loaded){
-    cityHint.textContent = '需要 GeoLite2-City 库。在「设置」里上传后即可用。';
+  if(!en.city_ready){
+    cityHint.textContent = '需要城市库。在「设置 → 数据富化」同步 DB-IP City 或上传 GeoLite2-City 后即可用。';
     $('#g-city').innerHTML = '';
   } else {
     cityHint.textContent = '';
@@ -991,7 +1010,7 @@ async function loadDash(){
     donut($('#topapp'),'application'),
     donut($('#topproto'),'protocol',{label:protoLabel}),
     topTable($('#topport'),'dst_port',{filter:'dst_port'}),
-    topTable($('#topasn'),'src_asn',{filter:'src_asn',fmt:v=>v==='0'?'<span style="color:var(--dim2)">未知</span>':'AS'+esc(v)}),
+    topTable($('#topasn'),'src_asn',{filter:'src_asn',blank:v=>v==='0',fmt:v=>'AS'+esc(v)}),
   ]);
 }
 
@@ -1032,7 +1051,7 @@ async function drillTo(field, value){
     topTable($('#d-port'), 'dst_port', {filters:f}),
     topTable($('#d-app'), 'application', {filters:f}),
     topTable($('#d-country'), peerCountry, {filters:f}),
-    topTable($('#d-asn'), peerASN, {filters:f, fmt:v=>v==='0'?'未知':'AS'+esc(v)}),
+    topTable($('#d-asn'), peerASN, {filters:f, blank:v=>v==='0', fmt:v=>'AS'+esc(v)}),
     topTable($('#d-proto'), 'protocol', {filters:f, fmt:protoLabel}),
   ]);
   box.scrollIntoView({behavior:'smooth', block:'nearest'});
@@ -1055,19 +1074,49 @@ async function loadConv(){
   $('#c-list').querySelectorAll('[data-drill]').forEach(n=>n.onclick=()=>drillTo(n.dataset.drill,n.dataset.val));
 }
 
+// 国家、ASN、组织这三样都是入库时由 ip2asn 库盖上去的,不是查询时算的。
+// 所以"一屏(未知)"有两个完全不同的原因,而页面必须把话说明白:库没加载,
+// 或者那些地址本来就没有国家(内网地址、组播、保留段)。
+//
+// 家里那台机器上后者才是常态:局域网内部的流量占大头,它们永远是(未知),
+// 而地图上唯一涂了色的那一小块可能只有几十 KB。不解释的话,看到的就是
+// "全不知道,可地图上却指着一个国家"。
+function geoWhy(en){
+  if(en.asn_loaded===false)
+    return '<span class="warn">ASN / 国家 / 组织库没有加载</span>,所以这几张榜单只有「(未知)」。'
+         + '到「设置 → 数据富化」同步任一 ASN 源即可。富化是在入库那一刻做的,'
+         + '库同步好之后只有新写入的流量带国家,已经入库的老数据不会补上。';
+  return '「(未知)」这一档是没有国家可归的地址:局域网内部通信、组播、保留网段,'
+       + '以及库里查不到的前缀。内网流量通常占绝大多数,所以这一档最大是正常的 ——'
+       + '地图上涂色的那几块只是其中能定位到国家的那一小部分。';
+}
+
 async function loadGeo(){
   showErr('');
+  // 底图先取:国家榜单要用它里面那份中文名,而地图本来也要等这一份。
+  // 取不到就退回只显示 ISO 码,不能因此整页不画。
+  try { await ensureMap(); } catch(e){}
+  if(!ENRICH) { try { await loadOverview(); } catch(e){} }
+  const en = ENRICH || {};
+  $('#g-why').innerHTML = geoWhy(en);
+
+  // 国家写成"英国 GB":只有码认不出来,只有名字又对不上地图 tooltip
+  // 和过滤条件里的取值。
+  const cname = v => {
+    const n = MAP_ZH && MAP_ZH[v];
+    return n ? esc(n)+' <span style="color:var(--dim2)">'+esc(v)+'</span>' : esc(v);
+  };
   const jobs = [
     geoMap($('#g-map')),
-    topTable($('#g-srcc'),'src_country',{limit:15,filter:'src_country'}),
-    topTable($('#g-dstc'),'dst_country',{limit:15,filter:'dst_country'}),
-    topTable($('#g-srca'),'src_asn',{limit:15,filter:'src_asn',fmt:v=>v==='0'?'未知':'AS'+esc(v)}),
+    topTable($('#g-srcc'),'src_country',{limit:15,filter:'src_country',fmt:cname}),
+    topTable($('#g-dstc'),'dst_country',{limit:15,filter:'dst_country',fmt:cname}),
+    topTable($('#g-srca'),'src_asn',{limit:15,filter:'src_asn',
+      blank:v=>v==='0', fmt:v=>'AS'+esc(v)}),
     topTable($('#g-org'),'src_org',{limit:15,filter:'src_org'}),
   ];
-  // 城市维度只在有 mmdb 时查 —— 否则查出来全是空字符串一行
-  if(FIELDS && FIELDS.groupable.includes('src_city')){
-    jobs.push(topTable($('#g-city'),'src_city',{limit:15,
-      fmt:v=>v?esc(v):'<span style="color:var(--dim2)">未知</span>'}));
+  // 城市维度只在有城市库时查 —— 否则查出来全是空字符串一行
+  if(FIELDS && FIELDS.groupable.includes('src_city') && en.city_ready!==false){
+    jobs.push(topTable($('#g-city'),'src_city',{limit:15}));
   }
   await Promise.all(jobs);
 }

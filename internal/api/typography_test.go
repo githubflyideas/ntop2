@@ -3,6 +3,7 @@ package api
 import (
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -55,5 +56,35 @@ func TestLogoIsLargerThanBodyText(t *testing.T) {
 
 	if logoPx < bodyPx*1.4 {
 		t.Errorf("LOGO %gpx 相对正文 %gpx 不够突出", logoPx, bodyPx)
+	}
+}
+
+// 未知的说法只许有一种。
+//
+// 这条是用户提出来的:同一屏上曾经同时出现"(未知)""未知""不知道"三种写法,
+// 加上 ASN 那格因为 label 是数字、跟字符串 '0' 比不相等而漏出一个点得动的
+// "AS0",看上去像是四种不同的状态,而其实都是同一件事 —— 没查到。
+//
+// 扫源码而不是渲染结果:这些字样散在 JS 拼 HTML 的字符串里,只有扫模板
+// 才能一网打尽。注释行不算,注释里要能自由地讨论"未知的那一堆"。
+func TestUnknownWordingIsConsistent(t *testing.T) {
+	for _, ln := range strings.Split(indexHTML, "\n") {
+		code := strings.TrimSpace(ln)
+		if strings.HasPrefix(code, "//") {
+			continue
+		}
+		if strings.Contains(code, "不知道") {
+			t.Errorf("界面文案里出现「不知道」,统一写成「(未知)」: %s", code)
+		}
+		for _, seg := range strings.Split(code, "未知")[:strings.Count(code, "未知")] {
+			if !strings.HasSuffix(seg, "(") {
+				t.Errorf("「未知」没有写成「(未知)」: %s", code)
+			}
+		}
+		// v==='0' 这种写法在 label 是数字时永远不成立。判空一律走
+		// topTable 的 opts.blank,它先把 label 转成字符串。
+		if strings.Contains(code, "fmt:v=>v==='0'") {
+			t.Errorf("用 fmt 判 ASN 为 0 会漏出 AS0,改用 opts.blank: %s", code)
+		}
 	}
 }
