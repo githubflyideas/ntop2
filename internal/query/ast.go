@@ -325,3 +325,21 @@ func validateCondition(c Condition, depth int) error {
 	}
 	return nil
 }
+
+// AndNot 把 base 与"排除 exclude"合成一个条件:base AND NOT(exclude)。
+//
+// 单独一个函数是因为 base 可能是零值 —— 保存的查询里「必须满足」那一块
+// 允许空着,只填「排除」。那时候不能包出一个 AND(空, NOT(...)):编译出来
+// 的 SQL 会多一个空括号,ClickHouse 直接报语法错误。
+func AndNot(base, exclude Condition) Condition {
+	neg := Condition{Op: OpNot, Conditions: []Condition{exclude}}
+	if base.isZero() {
+		return neg
+	}
+	return Condition{Op: OpAnd, Conditions: []Condition{base, neg}}
+}
+
+// isZero 判断这个条件是不是根本没填。
+func (c Condition) isZero() bool {
+	return c.Field == "" && c.Op == "" && len(c.Conditions) == 0
+}

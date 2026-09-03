@@ -810,8 +810,7 @@ func TestUnknownModeRejected(t *testing.T) {
 // "Illegal type String of argument of function IPv6NumToString"。查询语法
 // 完全合法、报错指向 SELECT,真正的原因是别名遮蔽。
 //
-// 全局排除网段落地后这条路变成了默认路径(每次查询都注入 IP 条件),
-// 明细模式更是必挂 —— 它的 SELECT 永远带 src_ip/dst_ip 两个别名。
+// 明细模式必挂 —— 它的 SELECT 永远带 src_ip/dst_ip 两个别名。
 func TestWhereColumnsAreQualified(t *testing.T) {
 	q := baseQuery()
 	q.GroupBy = []string{"src_ip"}
@@ -831,8 +830,12 @@ func TestDetailWhereColumnsAreQualified(t *testing.T) {
 	q.Mode = ModeDetail
 	q.GroupBy = nil
 	q.Metrics = nil
-	ex, _ := ExcludeCondition([]string{"10.0.0.0/8"}, ExcludeBoth)
-	q.Filters = AndNot(Condition{}, ex)
+	// 两个 IP 列同时出现在 WHERE 里的最短写法:排除"两端都在内网"的流。
+	// 保存的查询里「排除」块编译出来就是这个形状。
+	q.Filters = AndNot(Condition{}, Condition{Op: OpAnd, Conditions: []Condition{
+		{Field: "src_ip", Operator: OpCIDR, Value: "10.0.0.0/8"},
+		{Field: "dst_ip", Operator: OpCIDR, Value: "10.0.0.0/8"},
+	}})
 	if err := q.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}

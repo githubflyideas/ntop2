@@ -322,7 +322,6 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
       <div class="bar">
         <button class="act" id="e-run">查询</button>
         <button class="gh" id="e-explain">查看 SQL</button>
-        <label class="chk"><input type="checkbox" id="e-inclex"> 包含被全局排除的网段</label>
       </div>
       <div class="bar" style="margin:2px 0 0;padding-top:10px;border-top:1px solid var(--line)">
         <span class="hint" style="margin:0">保存的查询</span>
@@ -383,34 +382,11 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
           <button class="act" id="mmdbup" style="margin-left:8px">上传并生效</button>
         </div>
       </div>
-      <!-- 也占满一行:排除清单挪走以后这一栏只剩五行状态,而右半屏是空的。 -->
+      <!-- 占满一行:这一栏只剩五行状态,挤在右半栏里时左边是空的。 -->
       <div class="panel wide">
         <h2>输入源与存储</h2>
         <div id="set-sys"></div>
       </div>
-    </div>
-    <!-- 排除清单单独占一整行:它挤在右边那个窄栏里时,一个填网段的多行
-         文本框只有半屏宽,而右半屏是空的 —— 越长的网段越难看清自己填了
-         什么。这一块也不属于"输入源与存储"。 -->
-    <div class="panel" style="margin-top:12px">
-      <h2>全局排除网段</h2>
-      <p class="hint">一行一个。填在这里的网段会被加到每一次查询上 ——
-        Dashboard 的每张卡片与 Explorer 一起生效,不用在每个地方各加一遍。
-        想临时看被排掉的流量,去 Explorer 勾「包含被全局排除的网段」,
-        不必回来把清单删了再建回来。</p>
-      <textarea id="ex-list" rows="5" placeholder="192.168.1.0/24
-10.0.0.0/8
-fd00::/8"></textarea>
-      <div class="bar" style="margin:8px 0 0">
-        <label class="lb">排除方式</label>
-        <select id="ex-match">
-          <option value="both">两端都在清单里才排</option>
-          <option value="either">任一端在清单里就排</option>
-        </select>
-        <button class="act" id="ex-save">保存</button>
-        <span class="hint" id="ex-msg" style="margin:0"></span>
-      </div>
-      <p class="hint" id="ex-note" style="margin:6px 0 0"></p>
     </div>
   </section>
 </main>
@@ -1322,7 +1298,6 @@ function explorerAST(){
   if(must.bad||drop.bad) return null;
   const q={time_range:timeRange(), filters:filterTree(must.leaves, drop.leaves, $('#e-logic').value),
     limit:parseInt($('#e-limit').value)||100};
-  if($('#e-inclex').checked) q.include_excluded=true;
   if($('#e-mode').value==='detail'){
     q.mode='detail';
   } else {
@@ -1502,43 +1477,6 @@ $('#e-mode').onchange=syncMode;
 $('#e-interval').onchange=syncSort;
 $('#e-run').onclick=runExplore;
 $('#e-explain').onclick=explainExplore;
-
-// --- 全局排除网段 ---
-//
-// 清单存在服务端(DataDir/settings.json)而不是浏览器本地:它要参与每一次
-// 查询,而查询是在服务端编译的;换台电脑打开也还在。
-function exMsg(m, bad){
-  const el=$('#ex-msg');
-  el.textContent=m||'';
-  el.style.color = bad ? '#ff9c9c' : 'var(--green)';
-}
-
-async function loadExcludes(){
-  let d;
-  try { d = await api('/api/v1/settings'); } catch(e){ exMsg(e.message, true); return; }
-  if(!d) return;
-  const st = d.settings || {};
-  $('#ex-list').value = (st.exclude_cidrs||[]).join('\n');
-  $('#ex-match').value = st.exclude_match || 'both';
-  $('#ex-note').textContent = '最多 ' + (d.max_exclude_cidrs||32) + ' 条。'
-    + '两端都在清单里才排,去掉的正好是内网互访那部分噪音;改成"任一端在"会把'
-    + '内网机器访问外网的流量也一起排掉,那几乎是全部有效流量。';
-  // 设置文件坏掉时后端照样返回零值加一句 warning —— 查询不会因此失败,
-  // 但界面必须说出来,否则用户看到的是一份空清单,以为自己从没配过。
-  if(d.warning) exMsg(d.warning, true); else exMsg('');
-}
-
-async function saveExcludes(){
-  const list = $('#ex-list').value.split('\n').map(x=>x.trim()).filter(Boolean);
-  try { await api('/api/v1/settings/save', {exclude_cidrs:list, exclude_match:$('#ex-match').value}); }
-  catch(e){ exMsg(e.message, true); return; }
-  // 保存完回读一次:后端会把 10.1.2.3/8 规范化成 10.0.0.0/8,不回读的话
-  // 框里留着的还是原文,而实际生效的是另一个东西。
-  await loadExcludes();
-  exMsg('已保存,下一次查询就会生效');
-}
-
-$('#ex-save').onclick=()=>saveExcludes().catch(e=>exMsg(e.message,true));
 
 let SYNC_TIMER = null;
 
@@ -1868,7 +1806,7 @@ function load(tab){
   }
   const f={dash:loadDash,hosts:loadHosts,conv:loadConv,geo:loadGeo,
            explore:()=>{}, live:loadLive,
-           settings:async()=>{ await loadOverview(); await loadSources(); await loadExcludes(); }}[tab];
+           settings:async()=>{ await loadOverview(); await loadSources(); }}[tab];
   if(!f) return;
   Promise.resolve(f())
     // 隐藏的 section 宽度是 0,在里面初始化的图会被画成一条线。
