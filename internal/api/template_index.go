@@ -33,6 +33,7 @@ a{color:var(--blue);text-decoration:none}
 
 header{display:flex;align-items:center;gap:14px;padding:0 18px;height:58px;
  background:var(--panel);border-bottom:1px solid var(--line)}
+footer{padding:18px 24px 26px;color:var(--dim2);font-size:13px;text-align:center}
 header .logo{font-size:24px;font-weight:600;letter-spacing:-.02em}
 header .logo span{color:var(--blue)}
 header .meta{margin-left:auto;display:flex;gap:16px;align-items:center;font-size:14px;color:var(--dim)}
@@ -390,6 +391,11 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
     </div>
   </section>
 </main>
+
+<!-- 页脚只有版本号。写在这里而不是标题栏:标题栏那一行是每 30 秒跟着
+     overview 重画的实时状态,版本号一辈子不变,混在一起会让人以为它也是
+     实时的。报问题的人第一句话总是"我用的是哪个版本",页面上得能看见。 -->
+<footer>ntop2ban <span id="ver">__VERSION__</span></footer>
 
 <script>
 const $ = s => document.querySelector(s);

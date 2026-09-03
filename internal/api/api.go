@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"text/template"
 	"time"
 
 	"github.com/githubflyideas/ntop2ban/internal/auth"
@@ -38,11 +40,17 @@ type Server struct {
 	// queries 是保存查询的持久化(DataDir/queries.json)。
 	queries *queryStore
 
+	// index 是填好版本号的首页 HTML。见 handleIndex。
+	index string
+
 	// DataDir 用于存放上传的 mmdb。
 	DataDir string
 
 	// Inputs 是当前启用的输入源描述,展示在界面顶部。
 	Inputs []string
+
+	// Version 显示在页脚。报问题的人第一句话总是"我用的是哪个版本"。
+	Version string
 
 	// feed 是实时页的数据来源:内存里最近的若干条记录。见 live.go。
 	feed *live.Feed
@@ -64,6 +72,9 @@ type Config struct {
 	DataDir string
 	Inputs  []string
 
+	// Version 是编译时塞进 main 的版本号,显示在页脚。
+	Version string
+
 	// Feed 是实时缓冲,Reporters 是能报告到达情况的输入源。两者一起
 	// 回答"现在有包进来吗"。
 	Feed      *live.Feed
@@ -84,7 +95,19 @@ func New(cfg Config) *Server {
 		log: lg, DataDir: cfg.DataDir, Inputs: cfg.Inputs,
 		feed: cfg.Feed, reporters: cfg.Reporters, dns: cfg.DNS,
 		queries: newQueryStore(cfg.DataDir),
+		index:   renderIndex(cfg.Version),
 	}
+}
+
+// renderIndex 把版本号填进首页模板。
+//
+// 版本号是编译时用 -ldflags -X 塞进 main 的,api 包拿不到,只能由调用方
+// 传进来;没传就写 dev —— 直接 go run 起来的时候页脚不该是空的。
+func renderIndex(version string) string {
+	if version == "" {
+		version = "dev"
+	}
+	return strings.ReplaceAll(indexHTML, "__VERSION__", template.HTMLEscapeString(version))
 }
 
 // Routes 注册全部路由。
@@ -171,9 +194,14 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
+// handleIndex 把版本号填进页面。
+//
+// 替换在 New 里做过一次,每个请求只是写出来 —— 页面 100KB 级,每次请求
+// 都做一遍字符串替换纯属白费。版本号里的字符是编译时 -X 塞进来的,理论上
+// 可以是任何东西,所以走一遍 HTML 转义再拼。
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request, user string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(indexHTML))
+	_, _ = w.Write([]byte(s.index))
 }
 
 // handleQuery 是所有数据视图的入口。

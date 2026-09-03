@@ -236,7 +236,7 @@ func main() {
 	srv := api.New(api.Config{
 		Store: st, Auth: au, ASN: asnDB, MMDB: mmdb,
 		City: cityDB, Syncer: syncer,
-		DataDir: *dataDir, Inputs: inputLabels,
+		DataDir: *dataDir, Inputs: inputLabels, Version: version,
 		Feed: feed, Reporters: reporters, DNS: resolver,
 	})
 	mux := http.NewServeMux()
