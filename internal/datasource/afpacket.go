@@ -32,7 +32,7 @@ type afPacketSource struct {
 	agg *aggregator
 	log *log.Logger
 
-	// iface / samplingN 只为采集自检保留,见 selfcheck.go。
+	// iface / samplingN 留着只为日志:说清在哪块网卡上、抽不抽样。
 	iface     string
 	samplingN int
 
@@ -98,20 +98,6 @@ func openAFPacket(cfg Config, lg *log.Logger) (Source, error) {
 }
 
 func (s *afPacketSource) Mode() Mode { return ModeAFPacket }
-
-// SelfCheck 见 selfcheck.go。
-//
-// DirectionAware 为假:AF_PACKET 收的是同一个抓包口上的两个方向,包里
-// 没有"进还是出"这个信息,所以两个方向的计数只能合在一起报。
-func (s *afPacketSource) SelfCheck() SelfCheck {
-	in, out := s.agg.dirStats()
-	iface := s.iface
-	if iface == "" {
-		iface = "全部(未指定 -iface)"
-	}
-	return SelfCheck{Mode: ModeAFPacket, Iface: iface, SamplingN: s.samplingN,
-		DirectionAware: false, In: in, Out: out}
-}
 
 func (s *afPacketSource) Run(ctx context.Context) error {
 	go s.agg.runFlushLoop(ctx, s.flushInterval)

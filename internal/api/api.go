@@ -48,9 +48,6 @@ type Server struct {
 	// Inputs 是当前启用的输入源描述,展示在界面顶部。
 	Inputs []string
 
-	// capture 是本机采集自检的入口,见 capture.go。
-	capture Capture
-
 	// feed 是实时页的数据来源:内存里最近的若干条记录。见 live.go。
 	feed *live.Feed
 	// reporters 是能报告 UDP 到达情况的输入源(sFlow / NetFlow)。
@@ -71,9 +68,6 @@ type Config struct {
 	DataDir string
 	Inputs  []string
 
-	// Capture 是本机采集的状态,用来在界面上回答"上传到底采上了没有"。
-	Capture Capture
-
 	// Feed 是实时缓冲,Reporters 是能报告到达情况的输入源。两者一起
 	// 回答"现在有包进来吗"。
 	Feed      *live.Feed
@@ -92,8 +86,7 @@ func New(cfg Config) *Server {
 		st: cfg.Store, au: cfg.Auth, asn: cfg.ASN, mmdb: cfg.MMDB,
 		city: cfg.City, syncer: cfg.Syncer,
 		log: lg, DataDir: cfg.DataDir, Inputs: cfg.Inputs,
-		capture: cfg.Capture,
-		feed:    cfg.Feed, reporters: cfg.Reporters, dns: cfg.DNS,
+		feed: cfg.Feed, reporters: cfg.Reporters, dns: cfg.DNS,
 		queries:  newQueryStore(cfg.DataDir),
 		settings: newSettingsStore(cfg.DataDir),
 	}
@@ -334,7 +327,6 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, user str
 		enrichInfo["mmdb_nodes"] = nodes
 	}
 	out["enrich"] = enrichInfo
-	out["capture"] = captureInfo(s.capture, time.Now())
 	out["dns"] = s.dnsInfo()
 
 	writeJSON(w, http.StatusOK, out)

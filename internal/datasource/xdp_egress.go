@@ -28,8 +28,12 @@ import (
 // 所以先试 TCX,不行退到 cgroup。两个都不行只警告不退出:入向数据仍然
 // 是完整的,少一半方向也比整个采集起不来强 —— 但必须说清楚,不然用户
 // 拿着一张只有下载没有上传的图去做判断。
-// 两个钩子名定义在 selfcheck.go —— 自检要按钩子名分情况说话,而自检
-// 那个文件不带 linux 构建标签。
+// 两个钩子名只用在日志里 —— 排查"出向为什么没数据"时,得知道当时挂上的
+// 是哪一个:TCX 看得见转发流量,cgroup 那条退路只看得见本机进程发出的包。
+const (
+	egressHookTCX    = "TCX"
+	egressHookCgroup = "cgroup_skb/egress"
+)
 
 // attachEgress 挂出向程序,返回挂上的钩子名。
 //
@@ -168,13 +172,11 @@ func loadCollection(lg *log.Logger) (*ebpf.Collection, error) {
 func (s *xdpSource) attachEgressOrWarn(iface string) {
 	ifi, err := interfaceByName(iface)
 	if err != nil {
-		s.egressWhy = err.Error()
 		s.log.Printf("[flow] 出向采集未启用:%v", err)
 		return
 	}
 	hook, err := s.attachEgress(ifi.Index)
 	if err != nil {
-		s.egressWhy = err.Error()
 		s.log.Printf("[flow] 出向采集未启用,统计里只有下载、没有上传。原因:%v。"+
 			"两条出路:把内核升到 6.6 以上用 TCX,或改用 -datasource af-packet"+
 			"(双向都看得见,代价是没有 XDP 那样的内核态抽样)", err)

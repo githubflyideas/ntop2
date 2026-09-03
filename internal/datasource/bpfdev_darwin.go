@@ -213,13 +213,6 @@ func assembleBPFDevFilter(dlt int) ([]syscall.BpfInsn, error) {
 
 func (s *bpfDevSource) Mode() Mode { return ModeBPFDevice }
 
-// SelfCheck 见 selfcheck.go。/dev/bpf 与 AF_PACKET 一样分不清方向。
-func (s *bpfDevSource) SelfCheck() SelfCheck {
-	in, out := s.agg.dirStats()
-	return SelfCheck{Mode: ModeBPFDevice, Iface: s.iface, SamplingN: s.samplingN,
-		DirectionAware: false, In: in, Out: out}
-}
-
 func (s *bpfDevSource) Run(ctx context.Context) error {
 	go s.agg.runFlushLoop(ctx, s.flushInterval)
 

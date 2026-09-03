@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/githubflyideas/ntop2ban/internal/collector"
-	"github.com/githubflyideas/ntop2ban/internal/datasource"
 	"github.com/githubflyideas/ntop2ban/internal/flow"
 	"github.com/githubflyideas/ntop2ban/internal/live"
 )
@@ -27,6 +26,22 @@ import (
 // 是秒级,本机抓包更是连续的,10 秒还没动静就值得提一句。
 const liveStaleAfter = 10 * time.Second
 
+// Finding 是一句结论。Level 只有 ok / warn / info 三种,给界面上色用。
+//
+// 判断逻辑放在 Go 里而不是在 JS 模板里拼,是为了能写单元测试 —— "包收到了
+// 但一条记录都没解出来"这种话说错了比不说更糟。
+type Finding struct {
+	Level  string `json:"level"`
+	Title  string `json:"title"`
+	Detail string `json:"detail"`
+}
+
+const (
+	LevelOK   = "ok"
+	LevelWarn = "warn"
+	LevelInfo = "info"
+)
+
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request, _ string) {
 	since, _ := strconv.ParseUint(r.URL.Query().Get("seq"), 10, 64)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -39,7 +54,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request, _ string) {
 		// 页面白屏,而这个页面恰恰是用来排查故障的。
 		writeJSON(w, http.StatusOK, map[string]any{
 			"cursor": 0, "rows": []any{},
-			"findings": []datasource.Finding{{Level: datasource.LevelInfo,
+			"findings": []Finding{{Level: LevelInfo,
 				Title: "实时视图不可用", Detail: "这个版本没有装实时缓冲。"}},
 		})
 		return
@@ -176,29 +191,29 @@ func sourceLabel(src string) string {
 // 分四种情形,而这四种在日志里几乎分不开:一条都没进来过;包在进来但解
 // 不开;进来过但停了;正在进。第二种是最值得单独说的 —— 它看起来和第一
 // 种完全一样,而原因(比如版本发错)其实已经拿到手了。
-func liveFindings(snap live.Snapshot, arrivals []namedArrival, now time.Time) []datasource.Finding {
-	var fs []datasource.Finding
+func liveFindings(snap live.Snapshot, arrivals []namedArrival, now time.Time) []Finding {
+	var fs []Finding
 
 	// 先看远端输入源:包收到了却一条也解不开,这件事必须最先说。
 	for _, na := range arrivals {
 		a := na.A
 		switch {
 		case a.Packets == 0:
-			fs = append(fs, datasource.Finding{Level: datasource.LevelWarn,
+			fs = append(fs, Finding{Level: LevelWarn,
 				Title: na.Name + ":一个包也没收到",
 				Detail: "端口是通的(在监听),但上游设备还没往这里发过东西。" +
 					"检查设备上的采集器地址与端口是否指向本机,以及中间有没有防火墙。"})
 		case a.Records == 0 && a.Bad > 0:
-			fs = append(fs, datasource.Finding{Level: datasource.LevelWarn,
+			fs = append(fs, Finding{Level: LevelWarn,
 				Title: na.Name + ":收到 " + itoa(a.Packets) + " 个包,一条也解不开",
 				Detail: "数据在进来,是解码失败了 —— 这跟上游没在发是两件事。\n原因:" +
 					a.BadWhy + "\n最常见的是版本发错(v9/IPFIX 发到了 v5 的端口上)。"})
 		case a.Bad > 0:
-			fs = append(fs, datasource.Finding{Level: datasource.LevelInfo,
+			fs = append(fs, Finding{Level: LevelInfo,
 				Title:  na.Name + ":有 " + itoa(a.Bad) + " 个包解不开(共 " + itoa(a.Packets) + " 个)",
 				Detail: "多数包正常,少数解不开通常是另有一台设备往同一个端口发别的版本。\n最近一次:" + a.BadWhy})
 		default:
-			fs = append(fs, datasource.Finding{Level: datasource.LevelOK,
+			fs = append(fs, Finding{Level: LevelOK,
 				Title:  na.Name + ":收到 " + itoa(a.Packets) + " 个包,解出 " + itoa(a.Records) + " 条记录",
 				Detail: "上报正常。"})
 		}
@@ -207,19 +222,19 @@ func liveFindings(snap live.Snapshot, arrivals []namedArrival, now time.Time) []
 	// 再看整条链路有没有记录流过。
 	switch {
 	case snap.Records == 0:
-		fs = append(fs, datasource.Finding{Level: datasource.LevelWarn,
+		fs = append(fs, Finding{Level: LevelWarn,
 			Title: "还没有任何记录进来",
 			Detail: "这个页面显示的是内存里的实况,和 ClickHouse 写得成不成功无关。" +
-				"这里是空的说明采集本身没有产出:去设置页看「采集自检」," +
+				"这里是空的说明采集本身没有产出:看一眼启动日志有没有报错," +
 				"或者确认 -input 里开了你以为开着的那些输入源。"})
 	case now.Sub(snap.Last) > liveStaleAfter:
-		fs = append(fs, datasource.Finding{Level: datasource.LevelWarn,
+		fs = append(fs, Finding{Level: LevelWarn,
 			Title: "已经进来 " + itoa(snap.Records) + " 条,但最近 " +
 				itoa(int64(now.Sub(snap.Last).Seconds())) + " 秒没有新的",
 			Detail: "采集起来过、现在停了。机器闲着没流量是正常的;" +
 				"如果确定有流量,看看网卡是不是换了、或者上游设备停了上报。"})
 	default:
-		fs = append(fs, datasource.Finding{Level: datasource.LevelOK,
+		fs = append(fs, Finding{Level: LevelOK,
 			Title: "正在进数据:累计 " + itoa(snap.Records) + " 条",
 			Detail: "最近一条在 " + itoa(int64(now.Sub(snap.Last).Seconds())) +
 				" 秒前。下面的列表会自动把新记录顶上来。"})

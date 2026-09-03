@@ -388,16 +388,6 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
         <div id="set-sys"></div>
       </div>
     </div>
-    <!-- 采集自检单独占一整行,而且放在排除清单前面:一个人打开设置页最
-         常带着的问题是"我的数字对不对",这一块直接回答它。放在这里而不是
-         「输入源与存储」里面,是因为那一栏说的是"配了什么",这一块说的是
-         "实际采到了什么"——两者经常不一致,恰恰是不一致的时候最要紧。 -->
-    <div class="panel" style="margin-top:12px">
-      <h2>采集自检</h2>
-      <p class="hint">这几句话说的是本机抓包实际的状态,不需要懂 eBPF 也能读。
-        刷新页面即更新。</p>
-      <div id="set-capture"></div>
-    </div>
     <!-- 排除清单单独占一整行:它挤在右边那个窄栏里时,一个填网段的多行
          文本框只有半屏宽,而右半屏是空的 —— 越长的网段越难看清自己填了
          什么。这一块也不属于"输入源与存储"。 -->
@@ -952,7 +942,6 @@ async function loadOverview(){
     + row('磁盘(未压缩)', (st.uncompressed_gb||0).toFixed(2)+' GB')
     + '</tbody></table>';
 
-  renderCapture(d.capture);
   // 反查开没开是启动参数决定的,页面自己猜不出来。overview 每 30 秒回来
   // 一次,所以这个开关跟着服务端走,不会停在一个过期的判断上。
   DNS.enabled = !!(d.dns && d.dns.enabled);
@@ -970,13 +959,6 @@ async function loadOverview(){
   return d;
 }
 function row(k,v){ return '<tr><td style="color:var(--dim)">'+k+'</td><td>'+v+'</td></tr>'; }
-
-// renderCapture 只做排版。结论与 level 都是服务端算好的 ——
-// 判断逻辑在 Go 的 datasource.Explain 里,那边有单元测试盯着,
-// 搬到这里就只能靠肉眼看截图了。
-function renderCapture(c){
-  renderFindings($('#set-capture'), (c||{}).findings);
-}
 
 async function loadKPI(){
   const q = ast({limit:1, metrics:['bytes','packets','flows','observed_bytes','uniq_src_ip','uniq_dst_port'],
@@ -1686,8 +1668,8 @@ async function pollLive(){
   annotateLiveNames();
 }
 
-// renderFindings 与设置页的 renderCapture 是同一套排版,抽出来共用:
-// level 与措辞都是服务端算的,这里只负责上色和保留换行。
+// renderFindings 把服务端算好的结论排版出来:level 与措辞都是 Go 那边定的,
+// 这里只负责上色和保留换行。
 function renderFindings(box, fs){
   if(!box) return;
   fs = fs || [];

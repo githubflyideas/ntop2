@@ -29,14 +29,6 @@ type aggregator struct {
 	// 静默丢弃会让人看着不完整的数据下错判断。
 	dropped int
 
-	// in/out 是按方向分开的观测计数,只为采集自检服务,不参与聚合。
-	//
-	// 为什么记在聚合器里:三种数据源都往这里投喂,记在这里就只有一处
-	// 实现、一套口径。而且"出向到底有没有数据"这个问题必须在丢流之前
-	// 就回答 —— 下面 maxFlows 满了会 return,那时观测确实到了,只是没
-	// 进聚合表,若把计数放在那之后,一个繁忙的机器会自检出"出向没数据"。
-	in, out dirStat
-
 	sink Sink
 	log  *log.Logger
 }
@@ -125,14 +117,6 @@ func (a *aggregator) add(o Observation) {
 	}
 
 	now := time.Now()
-	d := &a.in
-	if o.Egress {
-		d = &a.out
-	}
-	d.Observations++
-	d.Packets += pkts
-	d.Bytes += int64(o.Length)
-	d.Last = now
 	if agg, ok := a.flows[k]; ok {
 		agg.pkts += pkts
 		agg.bytes += int64(o.Length)
@@ -223,20 +207,4 @@ func (a *aggregator) runFlushLoop(ctx context.Context, interval time.Duration) {
 			a.flush(ctx)
 		}
 	}
-}
-
-// dirStat 是一个方向上的观测计数。给采集自检看,不参与任何统计口径。
-type dirStat struct {
-	Observations int64
-	Packets      int64
-	Bytes        int64
-	// Last 是最近一次观测的时间。零值表示这个方向从来没有数据。
-	Last time.Time
-}
-
-// dirStats 取两个方向的计数快照。
-func (a *aggregator) dirStats() (in, out dirStat) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.in, a.out
 }

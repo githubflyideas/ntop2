@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/githubflyideas/ntop2ban/internal/collector"
-	"github.com/githubflyideas/ntop2ban/internal/datasource"
 	"github.com/githubflyideas/ntop2ban/internal/flow"
 	"github.com/githubflyideas/ntop2ban/internal/live"
 )
@@ -17,7 +16,7 @@ import (
 // 发了但版本不对、发过但停了。这些测试盯的是这几种情形有没有被说成
 // 不同的话,而不是文案本身。
 
-func joined(fs []datasource.Finding) string {
+func joined(fs []Finding) string {
 	var b strings.Builder
 	for _, f := range fs {
 		b.WriteString(f.Level + "|" + f.Title + "|" + f.Detail + "\n")
@@ -27,10 +26,10 @@ func joined(fs []datasource.Finding) string {
 
 func TestLiveFindingsNothingEverArrived(t *testing.T) {
 	fs := liveFindings(live.Snapshot{}, nil, time.Now())
-	if len(fs) != 1 || fs[0].Level != datasource.LevelWarn {
+	if len(fs) != 1 || fs[0].Level != LevelWarn {
 		t.Fatalf("%v", fs)
 	}
-	if !strings.Contains(fs[0].Detail, "采集自检") {
+	if !strings.Contains(fs[0].Detail, "-input") {
 		t.Errorf("没指向下一步该看哪里:%s", fs[0].Detail)
 	}
 	// 这里最容易被误解成"数据库是空的",必须点明看的是内存。
@@ -42,7 +41,7 @@ func TestLiveFindingsNothingEverArrived(t *testing.T) {
 func TestLiveFindingsFlowing(t *testing.T) {
 	now := time.Now()
 	fs := liveFindings(live.Snapshot{Records: 1200, Last: now.Add(-2 * time.Second)}, nil, now)
-	if fs[0].Level != datasource.LevelOK {
+	if fs[0].Level != LevelOK {
 		t.Fatalf("正在进数据不该报警:%v", fs)
 	}
 	if !strings.Contains(fs[0].Title, "1200") {
@@ -54,7 +53,7 @@ func TestLiveFindingsFlowing(t *testing.T) {
 func TestLiveFindingsStale(t *testing.T) {
 	now := time.Now()
 	fs := liveFindings(live.Snapshot{Records: 30, Last: now.Add(-90 * time.Second)}, nil, now)
-	if fs[0].Level != datasource.LevelWarn {
+	if fs[0].Level != LevelWarn {
 		t.Fatalf("%v", fs)
 	}
 	if !strings.Contains(fs[0].Title, "90 秒") {
@@ -89,7 +88,7 @@ func TestLiveFindingsUndecodable(t *testing.T) {
 
 func TestLiveFindingsNoPacketsAtAll(t *testing.T) {
 	fs := liveFindings(live.Snapshot{}, []namedArrival{{Name: "sflow-v5"}}, time.Now())
-	if fs[0].Level != datasource.LevelWarn || !strings.Contains(fs[0].Title, "一个包也没收到") {
+	if fs[0].Level != LevelWarn || !strings.Contains(fs[0].Title, "一个包也没收到") {
 		t.Fatalf("%v", fs)
 	}
 	if !strings.Contains(fs[0].Detail, "防火墙") {
@@ -104,10 +103,10 @@ func TestLiveFindingsMostlyGood(t *testing.T) {
 	arr := []namedArrival{{Name: "netflow-v5", A: collector.Arrival{
 		Packets: 100, Bad: 3, Records: 900, Last: now, BadWhy: "包长 12 小于 v5 头长 24"}}}
 	fs := liveFindings(live.Snapshot{Records: 900, Last: now}, arr, now)
-	if fs[0].Level != datasource.LevelInfo {
+	if fs[0].Level != LevelInfo {
 		t.Errorf("少量坏包是说明不是警告:%s", fs[0].Level)
 	}
-	if fs[1].Level != datasource.LevelOK {
+	if fs[1].Level != LevelOK {
 		t.Errorf("链路那条应该是 ok:%v", fs[1])
 	}
 }
