@@ -185,8 +185,9 @@ ntop2ban 这台机器的 IP、端口 6343、采样率按链路带宽给(千兆�
 本机采集用一个 XDP 程序(`bpf/sampler.c`)做 1/N 抽样,命中的包经
 ringbuf 送到用户态聚合。抽样判定在内核完成,不命中的包根本不会拷上来。
 
-XDP 程序永远 `XDP_PASS`,只观测不拦截 —— ntop2ban 的职责是
-Observe/Analyze,所以它不需要跟任何封禁程序争抢网卡挂载点。
+XDP 程序永远 `XDP_PASS`,只观测不拦截。封禁不在数据面上做 —— 它走
+nftables / iptables,所以这里不需要在每个包上查黑名单,也不跟别的程序
+争抢网卡挂载点。
 
 ### 出向要另挂一个钩子
 
@@ -515,7 +516,6 @@ make bpf-verify  # 重新编译并与库里的 .o 比对(CI 跑这个)
 - [x] 认证:启动参数 + 内存会话
 - [x] Saved Query(查询条件保存复用)
 - [ ] Dashboard 自定义(卡片增删与布局)
-- [ ] 向 xdp-ban 推送可疑事件(`POST /api/v1/security/events`)
 - [ ] Benchmark 定稿 `ORDER BY`
 
 ### 已知限制

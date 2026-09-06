@@ -55,6 +55,6 @@ XDP 是 Linux 内核接口,macOS 上没有,所以这里只有一级采集层可�
                      进程内缓存 300 秒,所以不会给上游 DNS 添压力。上游默认读
                      /etc/resolv.conf,也可以 -dns-upstream 192.168.1.1 指一个。
 
-ntop2ban 只做观测与统计,不封禁任何东西。
+采集侧只观测,不在网卡上拦包。
 
 完整文档:https://github.com/githubflyideas/ntop2ban

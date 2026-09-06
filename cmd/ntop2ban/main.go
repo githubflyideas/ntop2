@@ -3,8 +3,8 @@
 // 采集(本机 XDP/AF_PACKET、远端 sFlow v5、远端 NetFlow v5)→
 // Canonical Flow → 富化 → ClickHouse → Query Engine → Web 界面。
 //
-// 与 xdp-ban 的边界:ntop2ban 负责 Observe / Analyze,xdp-ban 负责
-// Decide / Enforce。封禁逻辑不在这里。
+// 采集侧只观测,不在数据面上拦包。要封一个地址是人在榜单上点出来的,
+// 落地走 internal/ban(nftables 优先,退到 iptables)。
 package main
 
 import (

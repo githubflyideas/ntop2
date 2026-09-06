@@ -78,6 +78,6 @@ CAP_NET_RAW/CAP_NET_ADMIN。只收 sFlow/NetFlow 的话不需要 root。
                      进程内缓存 300 秒,所以不会给上游 DNS 添压力。上游默认读
                      /etc/resolv.conf,也可以 -dns-upstream 192.168.1.1 指一个。
 
-ntop2ban 只做观测与统计,不封禁任何东西。封禁是 xdp-ban 的事。
+采集侧只观测,不在网卡上拦包。
 
 完整文档:https://github.com/githubflyideas/ntop2ban
