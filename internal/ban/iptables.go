@@ -1,143 +1,100 @@
 package ban
 
-import "fmt"
+import (
+	"fmt"
+	"net/netip"
+	"strings"
+	"time"
+)
 
-// setName 是 ipset 里那四个集合的名字,前缀同样是 ntop2ban。
+// setName 是 ipset 里那几个集合的名字,前缀同样是 ntop2ban。
 func setName(dir string) string { return TableName + "-" + dir }
 
-// iptBackend 是 nftables 不可用时的退路。
+// iptSections 给出没有 nftables 时的等价写法。
 //
-// 与 nft 那条路的两个实质差别,都写在这里而不是藏在代码里:
+// 和 nft 那份的两个实质差别写在这里而不是藏在命令里:
 //
-// 一是不原子。nft 一份脚本一次事务,而 iptables 只能"清空链、再一条条
-// 加回来",中间那几毫秒被封的地址是真的能过包的。全量同步的代价在这里
-// 最明显,但换成增量也好不了多少 —— 增量要维护影子状态,那种错更难查。
+// 一是这份是增量的,没有"推平重建"那一步,所以每条命令都得自己做到重复
+// 执行无害 —— 建链用 2>/dev/null || true,插跳转前先 -C 查一遍。不查就插的话
+// 每跑一次 PREROUTING 顶上就多一条一模一样的跳转,功能不坏,但看规则表的
+// 人会以为机器被人动过。
 //
-// 二是没有 ipset 的时候只能一个地址一条规则,匹配是线性的。有 ipset 就
-// 退化成一条规则查一个哈希集合,和 nft 的 named set 是一回事。
-type iptBackend struct {
-	run   runFunc
-	ipset bool
-}
-
-func (i *iptBackend) Name() string {
-	if i.ipset {
-		return "iptables + ipset"
+// 二是到期靠 ipset 自己的 timeout,单位是秒。集合必须建成 timeout 0 才
+// 支持逐元素的到期(0 是"默认不过期",不是"不支持");建成不带 timeout 的
+// 集合之后再想加带到期的元素,只能先 destroy 重建。没有 ipset 就只剩一个
+// 地址一条规则那条路,那条路没有到期。
+//
+// 只生成用得到的那一半:v4 地址不必带上 ip6tables,单向封禁不必带上另一个
+// 钩子。这份命令是给人读的,读之前先删掉一半才敢执行就没意义了。
+func iptSections(addr netip.Addr, dir Direction, ttl time.Duration) []Section {
+	ip := addr.String()
+	cmd, fam, suffix := "iptables", "inet", "4"
+	if !addr.Is4() {
+		cmd, fam, suffix = "ip6tables", "inet6", "6"
 	}
-	return "iptables"
-}
+	ipt := "sudo " + cmd + " -w 5 -t mangle"
 
-func (i *iptBackend) Note() string {
-	if i.ipset {
-		return ""
+	type leg struct {
+		set  string
+		hook string
+		side string // 匹配源还是目的
 	}
-	return "没装 ipset,每个地址占一条规则、逐条线性匹配。封几十个地址就该装 ipset,或者换成 nftables。"
-}
-
-// family 把一个协议族要做的事打包,免得 v4 / v6 两段代码写两遍又慢慢分叉。
-type family struct {
-	cmd      string // iptables 或 ip6tables
-	ipsetFam string // inet 或 inet6
-	inSet    string
-	outSet   string
-	in, out  []string
-}
-
-func (i *iptBackend) Apply(entries []Entry) error {
-	b := split(entries)
-	fams := []family{
-		{cmd: "iptables", ipsetFam: "inet", inSet: setName("in4"), outSet: setName("out4"), in: b.in4, out: b.out4},
-		{cmd: "ip6tables", ipsetFam: "inet6", inSet: setName("in6"), outSet: setName("out6"), in: b.in6, out: b.out6},
+	var legs []leg
+	if dir.in() {
+		legs = append(legs, leg{setName("in" + suffix), "PREROUTING", "src"})
 	}
-	for _, f := range fams {
-		if err := i.applyFamily(f); err != nil {
-			return err
+	if dir.out() {
+		legs = append(legs, leg{setName("out" + suffix), "POSTROUTING", "dst"})
+	}
+
+	var setup, ban, unban, look, tear []string
+	setup = append(setup, fmt.Sprintf("%s -N %s 2>/dev/null || true", ipt, TableName))
+	for _, l := range legs {
+		setup = append(setup,
+			fmt.Sprintf("sudo ipset create %s hash:net family %s timeout 0 -exist", l.set, fam),
+			fmt.Sprintf("%s -C %s -m set --match-set %s %s -j DROP 2>/dev/null || %s -A %s -m set --match-set %s %s -j DROP",
+				ipt, TableName, l.set, l.side, ipt, TableName, l.set, l.side),
+			fmt.Sprintf("%s -C %s -j %s 2>/dev/null || %s -I %s 1 -j %s",
+				ipt, l.hook, TableName, ipt, l.hook, TableName))
+
+		to := ""
+		if ttl > 0 {
+			to = fmt.Sprintf(" timeout %d", int(ttl.Seconds()))
 		}
+		ban = append(ban, fmt.Sprintf("sudo ipset add %s %s%s -exist", l.set, ip, to))
+		unban = append(unban, fmt.Sprintf("sudo ipset del %s %s -exist", l.set, ip))
+		look = append(look, fmt.Sprintf("sudo ipset list %s", l.set))
+		tear = append(tear, fmt.Sprintf("%s -D %s -j %s", ipt, l.hook, TableName))
 	}
-	return nil
-}
-
-func (i *iptBackend) applyFamily(f family) error {
-	ipt := func(args ...string) error {
-		_, err := i.run(f.cmd, "", append([]string{"-w", "5"}, args...)...)
-		return err
-	}
-	// try 用在"本来就可能失败"的地方:建一条已存在的链、删一条不存在的
-	// 跳转。把这些当错误处理会让第一次运行和第二次运行走不同的路。
-	try := func(args ...string) { _, _ = i.run(f.cmd, "", append([]string{"-w", "5"}, args...)...) }
-
-	try("-t", "mangle", "-N", TableName)
-	// 先清空。这一步之后旧的封禁立刻失效,新的还没装上 —— 这就是上面
-	// 说的那个窗口。放在最前面而不是最后,是因为放最后就变成"新旧规则
-	// 同时生效",那样清单里已经删掉的地址会多封一会儿,更难解释。
-	if err := ipt("-t", "mangle", "-F", TableName); err != nil {
-		return err
+	look = append([]string{fmt.Sprintf("%s -L %s -n -v", ipt, TableName)}, look...)
+	tear = append(tear,
+		fmt.Sprintf("%s -F %s", ipt, TableName),
+		fmt.Sprintf("%s -X %s", ipt, TableName))
+	for _, l := range legs {
+		tear = append(tear, fmt.Sprintf("sudo ipset destroy %s", l.set))
 	}
 
-	empty := len(f.in) == 0 && len(f.out) == 0
-	if empty {
-		// 没有要封的就把这个协议族的东西全拆掉,不留空链空集合。
-		// 顺序不能反:链还引用着集合的时候 ipset destroy 会失败。
-		try("-t", "mangle", "-D", "PREROUTING", "-j", TableName)
-		try("-t", "mangle", "-D", "POSTROUTING", "-j", TableName)
-		try("-t", "mangle", "-X", TableName)
-		if i.ipset {
-			try2 := func(args ...string) { _, _ = i.run("ipset", "", args...) }
-			try2("destroy", f.inSet)
-			try2("destroy", f.outSet)
-		}
-		return nil
+	hint := "到期由 ipset 自己管,单位是秒。"
+	if ttl <= 0 {
+		hint = "永久 —— 没写 timeout,只能自己删。"
 	}
+	noIPSet := fmt.Sprintf("没装 ipset 就只能一个地址一条规则:%s -A %s -%s %s -j DROP —— 那条路没有到期,匹配也是线性的。",
+		ipt, TableName, map[bool]string{true: "s", false: "d"}[dir.in()], ip)
 
-	if i.ipset {
-		for _, s := range []struct {
-			name string
-			ips  []string
-		}{{f.inSet, f.in}, {f.outSet, f.out}} {
-			if _, err := i.run("ipset", "", "create", s.name, "hash:net", "family", f.ipsetFam, "-exist"); err != nil {
-				return err
-			}
-			if _, err := i.run("ipset", "", "flush", s.name); err != nil {
-				return err
-			}
-			for _, ip := range s.ips {
-				if _, err := i.run("ipset", "", "add", s.name, ip, "-exist"); err != nil {
-					return err
-				}
-			}
-		}
-		if len(f.in) > 0 {
-			if err := ipt("-t", "mangle", "-A", TableName, "-m", "set", "--match-set", f.inSet, "src", "-j", "DROP"); err != nil {
-				return err
-			}
-		}
-		if len(f.out) > 0 {
-			if err := ipt("-t", "mangle", "-A", TableName, "-m", "set", "--match-set", f.outSet, "dst", "-j", "DROP"); err != nil {
-				return err
-			}
-		}
-	} else {
-		for _, ip := range f.in {
-			if err := ipt("-t", "mangle", "-A", TableName, "-s", ip, "-j", "DROP"); err != nil {
-				return err
-			}
-		}
-		for _, ip := range f.out {
-			if err := ipt("-t", "mangle", "-A", TableName, "-d", ip, "-j", "DROP"); err != nil {
-				return err
-			}
-		}
-	}
-
-	// 跳转插在两条内建链的第一位,而且插之前先用 -C 查一遍。不查就插的话,
-	// 每次同步都会多插一条,几十次之后 PREROUTING 顶上会有几十条一模一样的
-	// 跳转 —— 功能上没坏,但看规则表的人会以为自己的机器被搞过。
-	for _, hook := range []string{"PREROUTING", "POSTROUTING"} {
-		if err := ipt("-t", "mangle", "-C", hook, "-j", TableName); err != nil {
-			if err := ipt("-t", "mangle", "-I", hook, "1", "-j", TableName); err != nil {
-				return fmt.Errorf("把 %s 链挂到 mangle %s 上失败: %w", TableName, hook, err)
-			}
-		}
-	}
-	return nil
+	return []Section{{
+		Title: "第一步:建链和集合(重复执行无害)",
+		Hint:  noIPSet,
+		Text:  strings.Join(setup, "\n"),
+	}, {
+		Title: "第二步:封 " + ip,
+		Hint:  hint,
+		Text:  strings.Join(ban, "\n"),
+	}, {
+		Title: "解封",
+		Text:  strings.Join(unban, "\n"),
+	}, {
+		Title: "查看 / 整体拆掉",
+		Hint:  "pkts 那一列是这条封禁真正拦下来的包数。",
+		Text:  strings.Join(look, "\n") + "\n" + strings.Join(tear, "\n"),
+	}}
 }
