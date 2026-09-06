@@ -520,6 +520,11 @@ func (s *Server) handleEnrichSync(w http.ResponseWriter, r *http.Request, user s
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// 接口回话一律不许缓存。这些响应没有 ETag 也没有 Last-Modified,浏览器
+	// 于是会按自己的启发式规则决定要不要复用 —— 实测 Chromium 会把
+	// /api/v1/bans 的结果留下来,封禁清单改完之后界面上还是旧的一份,
+	// 而这种"显示的和实际生效的不一样"在封禁上是最糟的一类错。
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
