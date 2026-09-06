@@ -93,7 +93,8 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
   text-align:center;border:1px solid var(--line2);border-radius:4px;color:var(--dim2);
   cursor:pointer;font-size:13px;user-select:none;vertical-align:1px}
 .plus:hover{color:var(--fg);border-color:var(--dim2)}
-.pop{position:absolute;z-index:60;min-width:236px;padding:11px 12px;font-size:13.5px;
+.pop{position:absolute;z-index:60;width:min(560px,92vw);max-height:64vh;overflow:auto;
+  padding:11px 12px;font-size:13.5px;
   background:var(--panel);border:1px solid var(--line2);border-radius:7px;
   box-shadow:0 8px 26px rgba(0,0,0,.45)}
 .pop .ttl{font-weight:600;margin-bottom:6px}
@@ -102,6 +103,17 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
 .pop .why{color:var(--dim);line-height:1.55;white-space:pre-wrap}
 .pop .row{margin-top:11px;display:flex;gap:8px;align-items:center}
 .pop .msg{margin-top:8px;color:var(--amber);line-height:1.5;white-space:pre-wrap}
+.pop .two{display:flex;gap:10px}
+.pop .two>div{flex:1}
+/* 命令块。选中要方便 —— 这一屏存在的唯一目的就是把它复制走。 */
+.pop .sec{margin-top:12px;border-top:1px solid var(--line);padding-top:9px}
+.pop .sec .h{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.pop .sec .h b{font-weight:600}
+.pop pre{margin:6px 0 0;padding:8px 9px;background:var(--bg);border:1px solid var(--line);
+  border-radius:6px;font:13px/1.62 var(--mono);color:var(--fg);
+  white-space:pre;overflow-x:auto;user-select:all}
+.pop .be{display:flex;gap:6px;margin-top:10px}
+.pop .be button.on{color:var(--fg);border-color:var(--dim2)}
 
 /* 横向条形:用背景渐变画条,不需要 SVG */
 .barcell{position:relative;padding:5px 8px}
@@ -403,15 +415,6 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
         <h2>输入源与存储</h2>
         <div id="set-sys"></div>
       </div>
-      <div class="panel wide">
-        <h2>封禁中</h2>
-        <p class="hint">在榜单里地址后面点 + 号就能封。规则落在 nftables 的
-          <span class="mono">table inet ntop2ban</span>(没有 nftables 时退到 iptables 的
-          <span class="mono">-t mangle</span> 链 <span class="mono">ntop2ban</span>),
-          都在自己的表里、不往别人的链里插。进程退出后规则仍然留着 —— 程序崩了不该
-          悄悄放行,清掉过期的那些是下次启动时做的</p>
-        <div id="set-ban"></div>
-      </div>
     </div>
   </section>
 </main>
@@ -606,9 +609,9 @@ async function topTable(el, groupBy, opts){
     if(blank) clickable = '';
     else if(opts.drill) clickable = ' class="drill" data-drill="'+esc(opts.drill)+'" data-val="'+esc(label)+'"';
     else if(opts.filter) clickable = ' class="drill" data-filter="'+esc(opts.filter)+'" data-val="'+esc(label)+'"';
-    // 未知那一行不给 + 号:空字符串封不了,点开只会是一句报错。
+      // 未知那一行不给 + 号:空字符串封不了,点开只会是一句报错。
     const plus = (banable && !blank)
-      ? '<span class="plus" data-plus="'+esc(label)+'" title="封禁这个地址">+</span>' : '';
+      ? '<span class="plus" data-plus="'+esc(label)+'" title="生成封禁这个地址的命令">+</span>' : '';
     h += '<tr><td class="barcell"><span class="fill" style="width:'+pct+'%"></span>'
        + '<span class="txt mono"'+clickable+'>'+disp+'</span>'+plus+'</td>'
        + '<td class="num">'+fmtMetric(val)+'</td></tr>';
@@ -621,35 +624,18 @@ async function topTable(el, groupBy, opts){
   el.querySelectorAll('[data-plus]').forEach(n=>n.onclick=e=>{
     e.stopPropagation(); openBanPop(n, n.dataset.plus);
   });
-  // 已封禁的地址在榜单上要看得出来 —— 否则封完刷新一次就又变回一个
-  // 普通的 + 号,人只能靠记性。挂在渲染后面且不 await:状态有缓存,
-  // 而第一次拿它的那点延迟不该压着表格不显示。
-  if(banable) loadBanState().then(refreshPlus).catch(()=>{});
   // 反查是"表格已经画出来之后再补一行小字",不能挡在渲染前面:上游 DNS
   // 不响应时那两秒的超时会变成整页空白。国家、ASN 这类维度不反查,
   // 所以由调用方显式打开而不是看着像 IP 就查。
   if(opts.resolve) annotateNames(el, d.rows.map(r=>String(r[0])));
 }
 
-// --- 封禁 ---
+// --- 封禁:只生成命令 ---
 //
-// 状态在页面里缓存一份:每张榜单的每个 + 号都要知道"能不能封、这个地址
-// 是不是已经封了",挨个去问服务端就是一屏几十个请求。改动之后强制刷新。
-let BAN = null;
-const BANDIR = {in:'入向(不收它的包)', out:'出向(不发给它)', both:'双向'};
-
-async function loadBanState(force){
-  if(BAN && !force) return BAN;
-  // 失败也要给出一个可用的状态对象:封禁读不到不该让整张榜单画不出来。
-  try { BAN = await api('/api/v1/bans') || {available:false, entries:[]}; }
-  catch(e){ BAN = {available:false, reason:e.message, entries:[]}; }
-  return BAN;
-}
-
-function banDirLabel(d){ return BANDIR[d] || d; }
-// 永久封禁在 JSON 里没有 expires_at 这一项(服务端特意这么序列化的),
-// 所以这里判断的是"有没有这个字段"而不是年份。
-function banUntil(e){ return e.expires_at ? ('到 '+new Date(e.expires_at).toLocaleString()) : '永久'; }
+// 这个页面不动内核。按 + 号得到的是一段可以复制、可以先读一遍、可以自己
+// 改的命令,执行与否由人在有权限的终端里决定。理由很简单:一个看流量的
+// 看板一旦能改包过滤,它就成了这台机器上权限最大的东西,而封错一个地址
+// (网关、自己正在用的地址)之后连这个页面都打不开,救不回来。
 
 let POP = null;
 function closePop(){ if(POP){ POP.remove(); POP=null; } }
@@ -660,113 +646,100 @@ async function openBanPop(anchor, ip){
   closePop();
   const p = document.createElement('div');
   p.className = 'pop';
-  p.innerHTML = '<div class="ttl mono">'+esc(ip)+'</div><div class="why">读取封禁状态…</div>';
+  // 状态挂在元素上而不是 dataset 里。放 dataset 的话浮层自己就带上了
+  // data-dir / data-ttl,而里面那两个选择框也用这两个属性 ——
+  // querySelector('[data-dir]') 于是先命中浮层本身,取到的 value 是空的。
+  p._st = {ip:ip, dir:'both', ttl:'1h', be:'nft'};
+  // 浮层内部的点击一概不往外冒。文档上那个"点别处就关浮层"的监听器判断的是
+  // POP.contains(e.target),而换方向、换后端都会把浮层内容整块重画 ——
+  // 事件冒到文档时目标元素已经不在浮层里了,浮层于是自己关掉。
+  p.addEventListener('click', e=>e.stopPropagation());
+  p.innerHTML = '<div class="ttl mono">'+esc(ip)+'</div><div class="why">生成命令…</div>';
   document.body.appendChild(p);
   // 贴着按钮下方,右边够不着时往左收 —— 榜单最右边那一列的浮层否则会
-  // 顶出可视区域,选择框直接点不到。
+  // 顶出可视区域,命令块直接看不全。
   const r = anchor.getBoundingClientRect();
   const maxLeft = window.scrollX + document.documentElement.clientWidth - p.offsetWidth - 12;
   p.style.top = (r.bottom + window.scrollY + 6)+'px';
   p.style.left = Math.max(8, Math.min(r.left + window.scrollX, maxLeft))+'px';
   POP = p;
-  const st = await loadBanState();
-  if(POP !== p) return;   // 等状态回来的这段时间里被关掉、或者点了另一行
-  renderBanPop(p, ip, st);
+  await banLoad(p);
 }
 
-function renderBanPop(p, ip, st){
-  const cur = (st.entries||[]).find(e=>e.ip===ip);
-  let h = '<div class="ttl mono">'+esc(ip)+'</div>';
-  if(!st.available){
-    // 原因原样显示。"封禁不可用"这四个字对排查毫无帮助,而原因往往
-    // 就是一句"缺 CAP_NET_ADMIN"。
-    h += '<div class="why">不能封禁 —— '+esc(st.reason||'服务端没有给出原因')+'</div>';
-  } else if(cur){
-    h += '<div class="why">已封禁 · '+esc(banDirLabel(cur.direction))+' · '+esc(banUntil(cur))+'</div>'
-       + '<div class="row"><button class="gh" data-unban="1">解封</button></div>';
-  } else {
-    // 方向是相对这个地址说的,不是相对网卡:入向 = 不再收它的包,出向 =
-    // 不再发给它。按网卡方向说的话,同一个地址在源榜单和目的榜单里点出来
-    // 的效果会正好相反。
-    h += '<label>方向</label><select data-dir>'
-       + '<option value="both">双向(不收也不发)</option>'
-       + '<option value="in">入向(不收它的包)</option>'
-       + '<option value="out">出向(不发给它)</option></select>'
-       + '<label>时长</label><select data-ttl>'
-       + '<option value="1h">1 小时</option>'
-       + '<option value="24h">24 小时</option>'
-       + '<option value="7d">7 天</option>'
-       + '<option value="">永久</option></select>'
-       + '<div class="row"><button class="act" data-ban="1">封禁</button>'
-       + '<span class="why">'+esc(st.backend||'')+'</span></div>';
-    if(st.note) h += '<div class="msg">'+esc(st.note)+'</div>';
+// banLoad 去服务端要命令。方向或时长改了就重来一次 —— 这些分支(v4/v6、
+// 三种方向、有没有到期)在服务端有测试钉着,前端自己拼早晚会拼错一处。
+async function banLoad(p){
+  const q = 'ip='+encodeURIComponent(p._st.ip)+'&dir='+encodeURIComponent(p._st.dir)
+          + '&ttl='+encodeURIComponent(p._st.ttl);
+  let plan;
+  try { plan = await api('/api/v1/ban/commands?'+q); }
+  catch(e){
+    if(POP === p) p.innerHTML = '<div class="ttl mono">'+esc(p._st.ip)+'</div>'
+                              + '<div class="msg">'+esc(e.message)+'</div>';
+    return;
+  }
+  if(POP !== p) return;   // 等回话的这段时间里被关掉、或者点了另一行
+  p._plan = plan;
+  renderBanPop(p);
+}
+
+function renderBanPop(p){
+  const plan = p._plan;
+  const be = p._st.be;
+  const secs = (be === 'ipt' ? plan.iptables : plan.nft) || [];
+  const opt = (v,t,cur)=>'<option value="'+v+'"'+(v===cur?' selected':'')+'>'+t+'</option>';
+
+  let h = '<div class="ttl mono">'+esc(plan.ip)+'</div>'
+        + '<div class="why">下面的命令这个页面不会执行 —— 复制到有权限的终端里跑。'
+        + '页面本身是只读的。</div>';
+  if(plan.warning) h += '<div class="msg">当心:'+esc(plan.warning)+'</div>';
+  // 方向是相对这个地址说的,不是相对网卡:入向 = 不再收它的包,出向 =
+  // 不再发给它。按网卡方向说的话,同一个地址在源榜单和目的榜单里点出来
+  // 的效果会正好相反。
+  h += '<div class="two"><div><label>方向</label><select data-dir>'
+     + opt('both','双向(不收也不发)',p._st.dir)
+     + opt('in','入向(不收它的包)',p._st.dir)
+     + opt('out','出向(不发给它)',p._st.dir)
+     + '</select></div><div><label>时长</label><select data-ttl>'
+     + opt('1h','1 小时',p._st.ttl)
+     + opt('24h','24 小时',p._st.ttl)
+     + opt('7d','7 天',p._st.ttl)
+     + opt('','永久',p._st.ttl)
+     + '</select></div></div>'
+     + '<div class="why" style="margin-top:6px">'+esc(plan.ttl_label)+'</div>'
+     + '<div class="be"><button class="gh'+(be==='nft'?' on':'')+'" data-be="nft">nftables</button>'
+     + '<button class="gh'+(be==='ipt'?' on':'')+'" data-be="ipt">iptables + ipset</button></div>';
+
+  for(const s of secs){
+    h += '<div class="sec"><div class="h"><b>'+esc(s.title)+'</b>'
+       + '<button class="gh" data-copy="'+esc(s.text)+'">复制</button></div>'
+       + (s.hint ? '<div class="why">'+esc(s.hint)+'</div>' : '')
+       + '<pre>'+esc(s.text)+'</pre></div>';
   }
   p.innerHTML = h;
 
-  // 报错留在浮层里而不是弹到页面顶部的错误条:被拦下来的理由(比如"这是
-  // 默认网关")说的是刚点的这个地址,离开这一行就没有上下文了。
-  const say = m=>{
-    let d = p.querySelector('.msg');
-    if(!d){ d = document.createElement('div'); d.className='msg'; p.appendChild(d); }
-    d.textContent = m;
-  };
-  const done = async()=>{ closePop(); await renderBanPanel(); refreshPlus(); };
-  const add = p.querySelector('[data-ban]');
-  if(add) add.onclick = async()=>{
-    add.disabled = true;
-    try{
-      await api('/api/v1/ban', {ip:ip, dir:p.querySelector('[data-dir]').value,
-                                ttl:p.querySelector('[data-ttl]').value});
-      await done();
-    }catch(e){ add.disabled = false; say(e.message); }
-  };
-  const del = p.querySelector('[data-unban]');
-  if(del) del.onclick = async()=>{
-    del.disabled = true;
-    try{ await api('/api/v1/ban/delete', {ip:ip}); await done(); }
-    catch(e){ del.disabled = false; say(e.message); }
-  };
+  p.querySelector('[data-dir]').onchange = e=>{ p._st.dir = e.target.value; banLoad(p); };
+  p.querySelector('[data-ttl]').onchange = e=>{ p._st.ttl = e.target.value; banLoad(p); };
+  // 换后端不用再问服务端一次:两份命令是一起回来的。
+  p.querySelectorAll('[data-be]').forEach(n=>n.onclick=()=>{ p._st.be = n.dataset.be; renderBanPop(p); });
+  p.querySelectorAll('[data-copy]').forEach(n=>n.onclick=()=>copyText(n.dataset.copy, n));
 }
 
-// 封禁清单变了以后给已封禁的地址在榜单上留个记号。整表重画会冲掉滚动
-// 位置和展开的下钻面板,所以只改这些按钮本身。
-function refreshPlus(){
-  const on = new Set(((BAN&&BAN.entries)||[]).map(e=>e.ip));
-  document.querySelectorAll('[data-plus]').forEach(n=>{
-    const banned = on.has(n.dataset.plus);
-    n.textContent = banned ? '×' : '+';
-    n.style.color = banned ? 'var(--red)' : '';
-    n.title = banned ? '已封禁,点开可解封' : '封禁这个地址';
-  });
-}
-
-async function renderBanPanel(){
-  const el = $('#set-ban');
-  if(!el) return;
-  const st = await loadBanState(true);
-  let h = st.available
-    ? '<div class="fnd l-ok"><div class="t">可用 · '+esc(st.backend)+'</div><div class="d">'
-        + esc(st.note || '规则都在自己的表/链里,名字都叫 ntop2ban,方便定位。')+'</div></div>'
-    : '<div class="fnd l-warn"><div class="t">不可用</div><div class="d">'
-        + esc(st.reason||'服务端没有给出原因')+'</div></div>';
-  const list = st.entries||[];
-  if(!list.length){ el.innerHTML = h+'<div class="empty">现在没有封禁中的地址</div>'; return; }
-  h += '<table><tbody>';
-  for(const e of list){
-    h += '<tr><td class="mono">'+esc(e.ip)+'</td>'
-       + '<td>'+esc(banDirLabel(e.direction))+'</td>'
-       + '<td>'+esc(banUntil(e))+'</td>'
-       + '<td>'+esc(e.created_by||'')+'</td>'
-       + '<td>'+esc(e.note||'')+'</td>'
-       + '<td class="num"><button class="gh" data-unban="'+esc(e.ip)+'">解封</button></td></tr>';
+// copyText 带一条退路。navigator.clipboard 只在安全上下文里有,而这个界面
+// 通常跑在 http 上的内网地址,那里它是 undefined —— 没有退路的话"复制"
+// 这个按钮在真实部署里恰好是不工作的那一个。
+async function copyText(text, btn){
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch(e){ ok = false; }
+  if(!ok){
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand('copy'); } catch(e){ ok = false; }
+    ta.remove();
   }
-  el.innerHTML = h+'</tbody></table>';
-  el.querySelectorAll('[data-unban]').forEach(n=>n.onclick=async()=>{
-    n.disabled = true;
-    try{ await api('/api/v1/ban/delete', {ip:n.dataset.unban}); await renderBanPanel(); refreshPlus(); }
-    catch(err){ n.disabled = false; showErr(err.message); }
-  });
-  refreshPlus();
+  btn.textContent = ok ? '已复制' : '手工选中复制';
+  setTimeout(()=>{ btn.textContent = '复制'; }, 1400);
 }
 
 // --- IP 反查域名 ---
@@ -1996,7 +1969,7 @@ function load(tab){
              // 三块各自独立地跑:串起来的话前面一块出错后面就整块不显示 ——
              // 同步源列表取不回来不该连"封禁中"那张表一起消失,而那张表恰恰
              // 是出了事最想看的一张。
-             const r = await Promise.allSettled([loadOverview(), loadSources(), renderBanPanel()]);
+             const r = await Promise.allSettled([loadOverview(), loadSources()]);
              const bad = r.find(x=>x.status==='rejected');
              if(bad) throw bad.reason;
            }}[tab];
