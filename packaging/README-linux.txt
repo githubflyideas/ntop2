@@ -82,30 +82,26 @@ CAP_NET_RAW/CAP_NET_ADMIN。只收 sFlow/NetFlow 的话不需要 root。
 ------------
 
 榜单里地址后面有个 + 号,点开选方向(入向 / 出向 / 双向)和时长(1 小时 /
-24 小时 / 7 天 / 永久)。方向是相对那个地址说的:入向是不再收它的包,出向是
-不再发给它。
+24 小时 / 7 天 / 永久),浮层里就摆出该敲的命令,复制到有权限的终端里跑。
+页面自己不执行任何东西,ntop2ban 也不需要 CAP_NET_ADMIN 才能给出这些命令。
+方向是相对那个地址说的:入向是不再收它的包,出向是不再发给它。
 
-规则落在自己的表里,查看和手工清理:
+命令有 nftables 和 iptables + ipset 两份,浮层上切换。时长写在 set 元素的
+timeout 上,到点内核自己删;选"永久"就不写 timeout,得自己解封。
 
-    nft list table inet ntop2ban          # 优先走这条
-    iptables -t mangle -L ntop2ban -n     # 没有 nftables 时的退路
+查看和手工清理:
+
+    nft list table inet ntop2ban          # 优先用这份
+    iptables -t mangle -L ntop2ban -n     # 另一份
 
     nft delete table inet ntop2ban        # 手工全清
 
-要 CAP_NET_ADMIN,所以 sudo 跑的时候本来就有;不用 root 的话:
+有几个地址封了会把自己关在门外:你正在用来访问界面的那个地址、本机地址、
+默认网关、以及 ntop2ban 自己要连的 ClickHouse 和上游 DNS。这些照样给命令,
+但浮层上会先写一句当心 —— 家里榜单第一名十有八九就是网关或 NAS 自己。
 
-    sudo setcap cap_net_admin,cap_net_raw+ep ./ntop2ban
+要封一整片网段请在路由器上做。
 
-没这个权限只是界面上封不了(菜单里会写明原因),别的功能照旧。
-
-有几种地址点不动,界面会当场说为什么:你正在用来访问界面的那个地址、本机
-地址、默认网关、以及 ntop2ban 自己要连的 ClickHouse 和上游 DNS。家里榜单
-第一名十有八九就是网关或 NAS 自己,拦的就是"点一下页面再也打不开"。
-
-规则在进程退出后仍然留着 —— 程序崩了不该悄悄放行。清掉过期的那些是下次
-启动时做的,不是关掉进程就解封。清单存在 -data-dir 下的 bans.json,上限
-512 条;要封一整片网段请在路由器上做。
-
-采集侧只观测,不在网卡上拦包 —— 封禁走的是 nftables / iptables。
+采集侧只观测,不在网卡上拦包。
 
 完整文档:https://github.com/githubflyideas/ntop2ban
