@@ -180,6 +180,57 @@ ntop2ban 这台机器的 IP、端口 6343、采样率按链路带宽给(千兆�
 不带账号参数时生成随机密码而不是裸奔放行:这个界面能看全网流量明细、
 能看到内网拓扑,代价太大;也不用固定默认密码,那在公网上等于没密码。
 
+## 封禁
+
+榜单里每个地址后面有个 `+` 号,点开可以选方向(入向 / 出向 / 双向)和时长
+(1 小时 / 24 小时 / 7 天 / 永久)。方向是**相对这个地址**说的:入向是不再收
+它的包,出向是不再发给它 —— 按网卡方向讲的话,同一个地址在源榜单和目的榜单
+里点出来的效果会正好相反。
+
+规则落在自己的表里,不往别人的链里插:
+
+```bash
+nft list table inet ntop2ban          # nftables(优先)
+iptables -t mangle -L ntop2ban -n     # 退路
+```
+
+nftables 那条路是一张 `table inet ntop2ban`,地址进四个 named set
+(`in4`/`in6`/`out4`/`out6`),`prerouting` 与 `postrouting` 两个基础链挂在
+`priority -150`(也就是 mangle 的位置)跳到 `ban` 链。用 set 而不是一个地址
+一条规则,是因为后者到几十条就开始逐条线性匹配。用 prerouting/postrouting
+而不是 input/output,是因为前者也管**转发**的流量 —— NAS 和小路由器都在转发。
+没有 nftables 时退到 iptables 的 `-t mangle` 链 `ntop2ban`,有 ipset 用
+`hash:net`,没有就一个地址一条规则(界面上会说明这件事)。
+
+每次改动都是**全量重下一遍**整份规则:启动重放、清理过期、以及上一次只做了
+一半的操作,走的都是同一条幂等的路径,不存在影子状态。
+
+**需要 CAP_NET_ADMIN。** 没有就只是界面上封不了(原因会写在 `+` 号菜单里),
+不影响其他功能:
+
+```bash
+sudo setcap cap_net_admin,cap_net_raw+ep ./ntop2ban
+```
+
+有几种地址点不了,会当场告诉你为什么:请求方自己的地址、本机地址、回环、
+默认网关、以及 ntop2ban 自己要连的外部 ClickHouse 与上游 DNS。家用环境里
+榜单第一名十有八九就是网关或者 NAS 自己,这些护栏挡的是"点一下就再也打不开
+这个页面"。
+
+规则**故意在进程退出后仍然留着** —— 程序崩了不该悄悄放行。所以清掉过期的
+那些是下次启动时 `Replay()` 做的,不是关掉进程就自动解封。想手工清干净:
+
+```bash
+nft delete table inet ntop2ban
+# 或者
+iptables -t mangle -D PREROUTING -j ntop2ban; iptables -t mangle -D POSTROUTING -j ntop2ban
+iptables -t mangle -F ntop2ban; iptables -t mangle -X ntop2ban
+```
+
+清单存在 `-data-dir` 下的 `bans.json`,上限 512 条。要封一整片网段应该在
+路由器上做,不是在这里点几万次。**macOS 上不支持** —— 那里没有 nftables,
+pfctl 是另一套东西,界面会直接说明。
+
 ## 数据面:XDP 优先,自动降级
 
 本机采集用一个 XDP 程序(`bpf/sampler.c`)做 1/N 抽样,命中的包经
@@ -406,6 +457,8 @@ TABLE / MATERIALIZED VIEW IF NOT EXISTS`(schema 是存储层的实现细节,不�
 | `-dns-ttl` | `300s` | 反查结果的缓存时长,查不到的结果同样缓存这么久 |
 | `-ip2asn` | 空 | ip2asn TSV(`.tsv` / `.tsv.gz`),提供 ASN / 国家 / 组织 |
 | `-mmdb` | 空 | GeoLite2-City mmdb,额外提供城市与区域;也可在界面上传 |
+| `-ban` | 开 | 允许从界面上封禁地址(需要 CAP_NET_ADMIN) |
+| `-ban-backend` | 空(先试 nft) | 强制后端:`nft` 或 `iptables` |
 | `-version` | — | 打印版本后退出 |
 | `user=` `passwd=` | 无(生成随机密码) | 位置参数,不带 `-`;逗号分隔多账号,两边个数要一致 |
 
@@ -451,6 +504,9 @@ af-packet(macOS 上是 bpf-device)逐级试,失败原因会打在启动日志里
 | `POST /api/v1/queries/save` | 保存一条查询(存界面选择,不是 SQL/AST) |
 | `POST /api/v1/queries/delete` | 删除一条已保存的查询 |
 | `POST /api/v1/enrich/mmdb` | 上传 GeoLite2-City,立即生效 |
+| `GET /api/v1/bans` | 封禁能力(后端 / 不可用的原因)与当前清单 |
+| `POST /api/v1/ban` | 封一个地址:`{ip, dir, ttl, note}` |
+| `POST /api/v1/ban/delete` | 解封一个地址:`{ip}` |
 
 Query AST 示例:
 
@@ -515,6 +571,7 @@ make bpf-verify  # 重新编译并与库里的 .o 比对(CI 跑这个)
 - [x] 实时页(读内存,不查库)与显示时 DNS 反查(300 秒缓存)
 - [x] 认证:启动参数 + 内存会话
 - [x] Saved Query(查询条件保存复用)
+- [x] 封禁:榜单上点 + 号,nftables 优先、退到 iptables,可选时长与落盘重放
 - [ ] Dashboard 自定义(卡片增删与布局)
 - [ ] Benchmark 定稿 `ORDER BY`
 
@@ -530,6 +587,10 @@ make bpf-verify  # 重新编译并与库里的 .o 比对(CI 跑这个)
 too old`。`make release` 会拦住 1.24 以上的工具链(确认不再支持老内核时加
 `ALLOW_NEW_GO=1`)。内核低于 3.2 的机器上内嵌 ClickHouse 也用不了,只能
 `-clickhouse-addr` 接外部实例。
+
+**封禁只在 Linux 上可用,而且规则没在真机上验过。** nft 脚本与 iptables
+命令序列有单元测试,界面有端到端断言,但开发环境里没有 CAP_NET_ADMIN ——
+"生成的规则确实拦住了包"这一条还欠一次真机确认。
 
 **`ORDER BY` 是草案。** 当前 `(timestamp, src_ip, dst_ip, src_port,
 dst_port)` 对应最高频的"最近 1h/24h + 某个 IP"。设计文档明确要求最终
