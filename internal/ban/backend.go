@@ -10,6 +10,7 @@
 package ban
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/netip"
 	"os/exec"
@@ -77,6 +78,24 @@ type Entry struct {
 // Expired 判断这条在 now 是否已经过期。
 func (e Entry) Expired(now time.Time) bool {
 	return !e.ExpiresAt.IsZero() && now.After(e.ExpiresAt)
+}
+
+// MarshalJSON 让永久封禁在 JSON 里干脆没有 expires_at 这一项。
+//
+// 标准库的 omitempty 对 time.Time 不生效,零值会序列化成
+// "0001-01-01T00:00:00Z" —— 前端于是得靠年份去猜这是不是永久,
+// 而这种判断早晚会写错一处。
+func (e Entry) MarshalJSON() ([]byte, error) {
+	type entry Entry // 换个类型,免得 MarshalJSON 自己套自己
+	v := struct {
+		entry
+		ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	}{entry: entry(e)}
+	if !e.ExpiresAt.IsZero() {
+		t := e.ExpiresAt
+		v.ExpiresAt = &t
+	}
+	return json.Marshal(v)
 }
 
 // Backend 把一份封禁清单变成内核里的规则。

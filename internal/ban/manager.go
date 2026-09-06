@@ -78,6 +78,21 @@ func NewManager(dataDir string, enabled bool, force string, protect []string) *M
 	return m
 }
 
+// NewManagerWith 用一个现成的后端构造 Manager,跳过探测。
+//
+// 存在的理由是测试:上层要验证"封成功之后接口返回什么、界面拿到什么",
+// 而开发机、CI 和沙箱里都没有 CAP_NET_ADMIN,Detect 必然失败。护栏里
+// 依赖真实环境的那两项(本机地址、默认网关)照旧生效。
+func NewManagerWith(dataDir string, be Backend) *Manager {
+	return &Manager{
+		path:     filepath.Join(dataDir, "bans.json"),
+		be:       be,
+		now:      time.Now,
+		locals:   localAddrs,
+		gateways: defaultGateways,
+	}
+}
+
 // State 返回当前状态。顺手把过期的滤掉,免得界面上显示一条已经不生效的。
 func (m *Manager) State() (State, error) {
 	m.mu.Lock()

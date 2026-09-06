@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/githubflyideas/ntop2ban/internal/auth"
+	"github.com/githubflyideas/ntop2ban/internal/ban"
 	"github.com/githubflyideas/ntop2ban/internal/collector"
 	"github.com/githubflyideas/ntop2ban/internal/dnscache"
 	"github.com/githubflyideas/ntop2ban/internal/enrich"
@@ -39,6 +40,9 @@ type Server struct {
 
 	// queries 是保存查询的持久化(DataDir/queries.json)。
 	queries *queryStore
+
+	// bans 是封禁。nil 表示这个构造里没传,界面上按 + 号会说"没有启用"。
+	bans *ban.Manager
 
 	// index 是填好版本号的首页 HTML。见 handleIndex。
 	index string
@@ -82,6 +86,9 @@ type Config struct {
 
 	// DNS 是反查域名的解析器。留空则界面上不显示域名。
 	DNS *dnscache.Resolver
+
+	// Bans 是封禁管理器。留空则封禁整个功能不出现在界面上。
+	Bans *ban.Manager
 }
 
 func New(cfg Config) *Server {
@@ -94,6 +101,7 @@ func New(cfg Config) *Server {
 		city: cfg.City, syncer: cfg.Syncer,
 		log: lg, DataDir: cfg.DataDir, Inputs: cfg.Inputs,
 		feed: cfg.Feed, reporters: cfg.Reporters, dns: cfg.DNS,
+		bans:    cfg.Bans,
 		queries: newQueryStore(cfg.DataDir),
 		index:   renderIndex(cfg.Version),
 	}
@@ -139,6 +147,12 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/enrich/mmdb", s.authed(s.handleMMDBUpload))
 	mux.HandleFunc("/api/v1/enrich/sources", s.authed(s.handleEnrichSources))
 	mux.HandleFunc("/api/v1/enrich/sync", s.authed(s.handleEnrichSync))
+
+	// 封禁。三个接口全都在 authed 后面 —— 这是整个界面上唯一会改变这台
+	// 机器网络行为的操作,不能有例外。
+	mux.HandleFunc("/api/v1/bans", s.authed(s.handleBans))
+	mux.HandleFunc("/api/v1/ban", s.authed(s.handleBanAdd))
+	mux.HandleFunc("/api/v1/ban/delete", s.authed(s.handleBanDelete))
 }
 
 // authed 包装需要登录的 handler。
