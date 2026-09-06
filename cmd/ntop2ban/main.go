@@ -4,7 +4,7 @@
 // Canonical Flow → 富化 → ClickHouse → Query Engine → Web 界面。
 //
 // 采集侧只观测,不在数据面上拦包。要封一个地址是人在榜单上点出来的,
-// 落地走 internal/ban(nftables 优先,退到 iptables)。
+// 封禁只生成命令(internal/ban),本进程不动内核。
 package main
 
 import (
@@ -21,7 +21,6 @@ import (
 
 	"github.com/githubflyideas/ntop2ban/internal/api"
 	"github.com/githubflyideas/ntop2ban/internal/auth"
-	"github.com/githubflyideas/ntop2ban/internal/ban"
 	"github.com/githubflyideas/ntop2ban/internal/collector"
 	"github.com/githubflyideas/ntop2ban/internal/datasource"
 	"github.com/githubflyideas/ntop2ban/internal/dnscache"
@@ -65,12 +64,6 @@ func main() {
 			"反查用的上游 DNS,如 192.168.1.1:53(不写端口默认 53)。留空则用系统解析器")
 		dnsTTL = flag.Duration("dns-ttl", dnscache.DefaultTTL,
 			"反查结果的缓存时长。同一个地址在这段时间内只问上游一次,查不到的结果也一样缓存")
-
-		enableBan = flag.Bool("ban", true,
-			"允许从界面上封禁地址(需要 CAP_NET_ADMIN)。探测不到 nftables 或 iptables 时"+
-				"界面上会说明原因,不影响其他功能")
-		banBackend = flag.String("ban-backend", "",
-			"强制指定封禁后端:nft 或 iptables。留空则优先 nft、不可用再退到 iptables")
 
 		ip2asnPath = flag.String("ip2asn", "", "ip2asn TSV 路径(.tsv 或 .tsv.gz),提供 ASN/国家/组织")
 		mmdbPath   = flag.String("mmdb", "", "GeoLite2-City mmdb 路径,额外提供城市与区域;也可在界面上传")
@@ -240,36 +233,14 @@ func main() {
 		}
 	}
 
-	// 封禁。探测失败不是致命错误 —— 大多数人跑这个程序是为了看流量,
-	// 用 netflow 模式时根本不需要任何特权。失败原因存在 Manager 里,
-	// 界面上按 + 号时原样显示,而不是笼统地说一句"不可用"。
-	//
-	// -clickhouse-addr 与 -dns-upstream 一并交给护栏保护起来:把自己的
-	// 存储或者上游 DNS 封掉,是这个按钮第二容易犯的错(第一是封掉网关)。
-	bans := ban.NewManager(*dataDir, *enableBan, *banBackend, []string{*chAddr, *dnsUpstream})
-	if st, err := bans.State(); err == nil {
-		if st.Available {
-			note := ""
-			if st.Note != "" {
-				note = " —— " + st.Note
-			}
-			log.Printf("封禁可用,后端 %s%s", st.Backend, note)
-		} else if st.Reason != "" {
-			log.Printf("封禁不可用:%s", st.Reason)
-		}
-	}
-	// 启动时重放一次。清单为空时也要跑,那是唯一会拆掉上次运行遗留规则
-	// 的地方 —— 规则不随进程退出消失是故意的,程序崩了不该顺手放开封禁。
-	if err := bans.Replay(); err != nil {
-		log.Printf("重放封禁清单失败: %v", err)
-	}
-	go bans.ExpireLoop(ctx)
-
 	srv := api.New(api.Config{
 		Store: st, Auth: au, ASN: asnDB, MMDB: mmdb,
 		City: cityDB, Syncer: syncer,
 		DataDir: *dataDir, Inputs: inputLabels, Version: version,
-		Feed: feed, Reporters: reporters, DNS: resolver, Bans: bans,
+		Feed: feed, Reporters: reporters, DNS: resolver,
+		// 这两个地址交给封禁命令的护栏:把自己的存储或者上游 DNS 封掉,
+		// 是这个按钮第二容易犯的错(第一是封掉网关)。
+		BanProtect: []string{*chAddr, *dnsUpstream},
 	})
 	mux := http.NewServeMux()
 	srv.Routes(mux)
