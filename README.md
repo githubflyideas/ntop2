@@ -1,6 +1,6 @@
 # Ntop2
 
-**Watch the Top, Ban the Bad.**
+**Watch the Top, find the bad.**
 
 单机 Flow Analytics 平台。XDP/eBPF 采集 + ClickHouse 存储 + 灵活查询。
 
