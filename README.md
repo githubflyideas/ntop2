@@ -11,7 +11,7 @@
 ## 这是什么
 
 以 ClickHouse 为核心,在单机部署场景下实现接近 ElastiFlow 核心 Flow
-Analytics 的能力:Top Talker / Conversation / ASN / Country / Port /
+Analytics 的能力: 不需要你再安装Ntop,Tcpdump,Wireshark,Tshark,.....Top Talker / Conversation / ASN / Country / Port /
 Protocol / 时间序列 / 下钻,输入支持本机 XDP、远端 sFlow v5、远端
 NetFlow v5。
 
