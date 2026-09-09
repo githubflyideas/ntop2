@@ -7,7 +7,7 @@ import _ "embed"
 // samplerBytecode 是编译好的 XDP 采样程序。
 //
 // 这里的 .o **提交进版本库**。理由是交付承诺——
-// ntop2ban 的最终用户应该 `go build` 一步出二进制、不需要装 clang。
+// ntop2 的最终用户应该 `go build` 一步出二进制、不需要装 clang。
 // 只有改动 bpf/sampler.c 的维护者才需要 clang 与 `make bpf`。
 //
 // 代价是 .o 与 .c 可能漂移(改了 C 忘了重编)。这个风险由 `make bpf-verify`

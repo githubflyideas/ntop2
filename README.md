@@ -1,4 +1,4 @@
-# ntop2ban
+# Ntop2
 
 **Watch the Top, Ban the Bad.**
 
@@ -20,18 +20,18 @@ NetFlow v5。
 
 ```bash
 # x86_64
-curl -L -o ntop2ban.tar.gz https://github.com/githubflyideas/ntop2ban/releases/latest/download/ntop2ban-linux-amd64.tar.gz
-tar xzf ntop2ban.tar.gz && cd ntop2ban-linux-amd64
-sudo ./ntop2ban -iface eth0 user=admin passwd=你的密码
+curl -L -o ntop2.tar.gz https://github.com/githubflyideas/ntop2ban/releases/latest/download/ntop2-linux-amd64.tar.gz
+tar xzf ntop2.tar.gz && cd ntop2-linux-amd64
+sudo ./ntop2 -iface eth0 user=admin passwd=你的密码
 ```
 
 四个平台各有一个这样的"解压即跑"包,把 URL 里的 `linux-amd64` 换掉即可:
 `linux-amd64`、`linux-arm64`、`darwin-arm64`、`darwin-amd64`。包里三个文件:
 
 ```
-ntop2ban-linux-amd64/
-├── ntop2ban      # 主程序 ~10MB
-├── clickhouse    # 官方静态二进制,由 ntop2ban 自动拉起托管
+ntop2-linux-amd64/
+├── ntop2         # 主程序 ~10MB
+├── clickhouse    # 官方静态二进制,由 ntop2 自动拉起托管
 └── README.txt    # 这一页的浓缩版,离线也能看
 ```
 
@@ -43,11 +43,11 @@ ntop2ban-linux-amd64/
 macOS 上是同样的流程,只多一步解除 Gatekeeper 隔离:
 
 ```bash
-curl -L -o ntop2ban.tar.gz https://github.com/githubflyideas/ntop2ban/releases/latest/download/ntop2ban-darwin-arm64.tar.gz
-tar xzf ntop2ban.tar.gz
-xattr -dr com.apple.quarantine ntop2ban-darwin-arm64     # 这一步必须做
-cd ntop2ban-darwin-arm64
-sudo ./ntop2ban -iface en0 user=admin passwd=你的密码
+curl -L -o ntop2.tar.gz https://github.com/githubflyideas/ntop2ban/releases/latest/download/ntop2-darwin-arm64.tar.gz
+tar xzf ntop2.tar.gz
+xattr -dr com.apple.quarantine ntop2-darwin-arm64     # 这一步必须做
+cd ntop2-darwin-arm64
+sudo ./ntop2 -iface en0 user=admin passwd=你的密码
 ```
 
 `xattr -dr` 不能省。浏览器下载的压缩包会被打上 `com.apple.quarantine`,
@@ -87,26 +87,26 @@ Linux 大包里的 clickhouse 是官方**定版**构建(`packages.clickhouse.com
 宿主机的 `ld.so` 读它、比自己旧就直接 `FATAL: kernel too old` —— CentOS 6 的
 2.6.32 卡在这里,而它的 glibc 2.12 反而过得了 2.4。定版渠道没有 `amd64compat`,所以屏蔽了这些指令的
 虚拟机与很老的物理机上跑不了内嵌实例 —— 那种机器请用 `-clickhouse-addr` 接一个
-外部 ClickHouse,ntop2ban 自己是静态 Go 二进制,不受这些门槛影响。启动失败时进程
+外部 ClickHouse,ntop2 自己是静态 Go 二进制,不受这些门槛影响。启动失败时进程
 会直接把原因和该走哪条路打出来。
 
 macOS 侧没有定版资产,继续用 `builds.clickhouse.com/master` 的自解压构建,它要
 glibc 2.25 —— 在 Mac 上无所谓,写在这里只是解释两个平台为什么不一样。
 
 ```bash
-sudo ./ntop2ban -iface eth0 -clickhouse-addr 127.0.0.1:9000 user=admin passwd=xxx
+sudo ./ntop2 -iface eth0 -clickhouse-addr 127.0.0.1:9000 user=admin passwd=xxx
 ```
 
 
 ## 快速开始
 
 ```bash
-sudo ./ntop2ban -iface eth0 user=admin passwd=你的密码
+sudo ./ntop2 -iface eth0 user=admin passwd=你的密码
 # 监听 :8090。默认只抓本机,不开任何 UDP 端口
 ```
 
 需要 root(或 `CAP_NET_ADMIN` + `CAP_NET_RAW`)才能挂 XDP 与抓包。
-发行包里 `ntop2ban` 与官方 `clickhouse` 静态二进制同目录,启动时自动
+发行包里 `ntop2` 与官方 `clickhouse` 静态二进制同目录,启动时自动
 拉起并托管,不需要单独装数据库。已经有 ClickHouse 的话用
 `-clickhouse-addr host:9000` 连过去。
 
@@ -117,10 +117,10 @@ sudo ./ntop2ban -iface eth0 user=admin passwd=你的密码
 用户只想看本机流量。要收远端数据必须显式打开,那时你知道自己在开什么。
 
 ```bash
-./ntop2ban -iface eth0                     # 只抓本机(默认)
-./ntop2ban -input sflow                    # 只收 sFlow,不抓本机
-./ntop2ban -input netflow -netflow-listen :9995   # 只收 NetFlow,换端口
-./ntop2ban -input local,sflow -iface eth0  # 同时启用:本机 + 交换机镜像
+./ntop2 -iface eth0                     # 只抓本机(默认)
+./ntop2 -input sflow                    # 只收 sFlow,不抓本机
+./ntop2 -input netflow -netflow-listen :9995   # 只收 NetFlow,换端口
+./ntop2 -input local,sflow -iface eth0  # 同时启用:本机 + 交换机镜像
 ```
 
 最后那种组合是有实际场景的:一台机器既跑业务(本机流量)又收汇聚交换机
@@ -140,7 +140,7 @@ Flow Model 不变"的落点。
 ### 收 sFlow:一次跑通
 
 ```bash
-./ntop2ban -input sflow user=admin passwd=你的密码
+./ntop2 -input sflow user=admin passwd=你的密码
 # 日志里应该出现:sFlow v5 监听 :6343
 ```
 
@@ -152,7 +152,7 @@ Flow Model 不变"的落点。
 bind。只收远端数据时整个进程都不碰网卡,所以别习惯性加 `sudo`。
 
 导出侧(交换机 / 路由器 / Open vSwitch)填三样:collector 地址是跑
-ntop2ban 这台机器的 IP、端口 6343、采样率按链路带宽给(千兆给 1/1000
+ntop2 这台机器的 IP、端口 6343、采样率按链路带宽给(千兆给 1/1000
 量级)。**记得放开防火墙的 UDP 6343**,这是最常见的"什么都没收到"的原因,
 而 UDP 两边都不会报错。
 
@@ -173,7 +173,7 @@ ntop2ban 这台机器的 IP、端口 6343、采样率按链路带宽给(千兆�
 照搬 pingping 的做法:用户名密码放启动参数,没有数据库、没有注册流程。
 
 ```bash
-./ntop2ban user=alice,bob passwd=p1,p2
+./ntop2 user=alice,bob passwd=p1,p2
 ```
 
 会话只在内存里,重启即失效——单机工具完全可以接受,换来每个请求零 I/O。
@@ -196,7 +196,7 @@ ntop2ban 这台机器的 IP、端口 6343、采样率按链路带宽给(千兆�
 方向讲的话,同一个地址在源榜单和目的榜单里点出来的效果正好相反。
 
 命令有两份,nftables 与 iptables + ipset,浮层上切换。nftables 那份是一张
-`table inet ntop2ban`,地址进四个 named set(`in4`/`in6`/`out4`/`out6`),
+`table inet ntop2ban`(表名没跟着程序改 —— 它已经写在别人机器上的规则里),地址进四个 named set(`in4`/`in6`/`out4`/`out6`),
 `prerouting` 与 `postrouting` 两个基础链挂在 `priority -150`(mangle 的位置)
 跳到 `ban` 链。用 set 而不是一个地址一条规则,是因为后者到几十条就开始逐条
 线性匹配;用 prerouting/postrouting 而不是 input/output,是因为前者也管
@@ -210,7 +210,7 @@ ntop2ban 这台机器的 IP、端口 6343、采样率按链路带宽给(千兆�
 它恰恰是打开逐元素超时的开关。
 
 有几个地址封了会把自己关在门外:请求方自己的地址、本机地址、回环、默认网关、
-以及 ntop2ban 要连的外部 ClickHouse 与上游 DNS。这些**照样给命令**,但浮层
+以及 ntop2 要连的外部 ClickHouse 与上游 DNS。这些**照样给命令**,但浮层
 上会先写一句当心 —— 页面既然不执行,拦着不给就只是碍事。默认网关是从
 `/proc/net/route` 读的,没去 shell out `ip route`。
 
@@ -224,7 +224,7 @@ iptables -t mangle -F ntop2ban; iptables -t mangle -X ntop2ban
 ```
 
 要封一整片网段应该在路由器上做,不是在这里点几万次。命令是 Linux 的;在
-macOS 上跑 ntop2ban 也能生成,但那台机器上得自己换成 pfctl。
+macOS 上跑 ntop2 也能生成,但那台机器上得自己换成 pfctl。
 
 ## 数据面:XDP 优先,自动降级
 
@@ -408,13 +408,13 @@ query benchmark 决定,而不是凭经验。
 存储那台:
 
 ```bash
-NTOP2BAN_CLICKHOUSE_PASSWORD='换成你的密码'   ./ntop2ban -clickhouse-listen 0.0.0.0 -node-id 1 -iface eth0 user=admin passwd=xxx
+NTOP2BAN_CLICKHOUSE_PASSWORD='换成你的密码'   ./ntop2 -clickhouse-listen 0.0.0.0 -node-id 1 -iface eth0 user=admin passwd=xxx
 ```
 
 其余每个节点:
 
 ```bash
-NTOP2BAN_CLICKHOUSE_PASSWORD='同一个密码'   ./ntop2ban -clickhouse-addr 10.0.0.10:9000 -node-id 2 -iface eth0 user=admin passwd=xxx
+NTOP2BAN_CLICKHOUSE_PASSWORD='同一个密码'   ./ntop2 -clickhouse-addr 10.0.0.10:9000 -node-id 2 -iface eth0 user=admin passwd=xxx
 ```
 
 `-node-id` 必须各不相同 —— 本机采集的记录 `device_id` 原本恒为 0,不给
@@ -428,7 +428,7 @@ TABLE / MATERIALIZED VIEW IF NOT EXISTS`(schema 是存储层的实现细节,不�
 
 ## 启动参数
 
-`./ntop2ban -h` 会打印这份清单,下面按用途分组,顺带说清默认值的理由。
+`./ntop2 -h` 会打印这份清单,下面按用途分组,顺带说清默认值的理由。
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
@@ -528,7 +528,7 @@ IP 字段的 `cidr` / `not_cidr` 直接写网段,例如 `10.252.145.0/24` ——
 ## 从源码构建
 
 ```bash
-make build       # 构建 ./ntop2ban
+make build       # 构建 ./ntop2
 make check       # vet + 全部测试
 make release     # 交叉编译 {linux,darwin}/{amd64,arm64} 到 dist/(package 的输入)
 make package     # 上面四个再各配一个 clickhouse 打成 tar.gz(要联网下 ~660MB)

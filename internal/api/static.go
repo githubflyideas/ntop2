@@ -17,7 +17,7 @@ import (
 // 嵌入压缩版让二进制少长 1.4MB,而浏览器本来就都支持 gzip,绝大多数请求
 // 可以把这份字节原样发出去、完全不解压 —— 既省二进制体积又省 CPU。
 //
-// 不用 CDN 是明确的设计决定:ntop2ban 常常部署在没有出网的内网机房,
+// 不用 CDN 是明确的设计决定:ntop2 常常部署在没有出网的内网机房,
 // 一个取不到的 CDN 会让整个界面变成白屏。
 //
 //go:embed static/echarts.min.js.gz static/world.json.gz

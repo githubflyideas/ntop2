@@ -3,7 +3,7 @@ package api
 // Dashboard 与 Explorer。深色主题,图表用 ECharts。
 //
 // ECharts 与世界地图底图都由 internal/api/static.go 嵌进二进制,从
-// /static/ 提供,**不走 CDN** —— ntop2ban 常部署在没有出网的内网机房,
+// /static/ 提供,**不走 CDN** —— ntop2 常部署在没有出网的内网机房,
 // 一个取不到的 CDN 会让整个界面变成白屏。压缩后合计约 0.4MB。
 //
 // 早先这些图是手写 SVG 的。换掉的原因不是画不出形状,而是画出来之后
@@ -18,7 +18,7 @@ const indexHTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ntop2ban</title>
+<title>Ntop2</title>
 <script src="/static/echarts.min.js"></script>
 <style>
 :root{color-scheme:dark;
@@ -207,7 +207,7 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
 </head>
 <body>
 <header>
-  <div class="logo">ntop<span>2</span>ban</div>
+  <div class="logo">Ntop<span>2</span></div>
   <div class="meta" id="hdr"></div>
   <a class="out" href="/logout">退出</a>
 </header>
@@ -422,7 +422,7 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
 <!-- 页脚只有版本号。写在这里而不是标题栏:标题栏那一行是每 30 秒跟着
      overview 重画的实时状态,版本号一辈子不变,混在一起会让人以为它也是
      实时的。报问题的人第一句话总是"我用的是哪个版本",页面上得能看见。 -->
-<footer>ntop2ban <span id="ver">__VERSION__</span></footer>
+<footer>Ntop2 <span id="ver">__VERSION__</span></footer>
 
 <script>
 const $ = s => document.querySelector(s);

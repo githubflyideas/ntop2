@@ -7,7 +7,7 @@ const loginHTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ntop2ban</title>
+<title>Ntop2</title>
 <style>
 :root{color-scheme:light}
 *{box-sizing:border-box}
@@ -30,7 +30,7 @@ button:hover{background:#5590ff}
 </head>
 <body>
 <div class="card">
-  <h1>ntop2ban</h1>
+  <h1>Ntop2</h1>
   <p class="sub">Flow Analytics</p>
   <form id="f">
     <label for="u">用户名</label>

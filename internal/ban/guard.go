@@ -44,7 +44,7 @@ func guardReason(target, caller netip.Addr, locals, gateways, extra []netip.Addr
 	}
 	for _, a := range extra {
 		if t == a.Unmap() {
-			return "ntop2ban 自己要连这个地址(外部 ClickHouse 或上游 DNS),封掉它这个程序就不工作了"
+			return "ntop2 自己要连这个地址(外部 ClickHouse 或上游 DNS),封掉它这个程序就不工作了"
 		}
 	}
 	return ""

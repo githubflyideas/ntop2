@@ -1,13 +1,13 @@
-ntop2ban —— 解压即跑
+ntop2 —— 解压即跑
 ====================
 
-这个目录里有两个可执行文件:ntop2ban 本身,和它要用的 clickhouse。
+这个目录里有两个可执行文件:ntop2 本身,和它要用的 clickhouse。
 不需要安装任何东西,不需要 docker,不需要 root 之外的权限配置。
 
 跑起来
 ------
 
-    sudo ./ntop2ban -iface eth0
+    sudo ./ntop2 -iface eth0
 
 把 eth0 换成你要看的网卡名(ip -br link 可以列出来)。然后浏览器打开
 
@@ -27,9 +27,9 @@ ntop2ban —— 解压即跑
 
 任何一条不满足,内嵌的 clickhouse 就用不了,改接一个外部实例:
 
-    sudo ./ntop2ban -iface eth0 -clickhouse-addr 192.168.1.10:9000
+    sudo ./ntop2 -iface eth0 -clickhouse-addr 192.168.1.10:9000
 
-ntop2ban 本身是静态编译的 Go 二进制,上面三条都不适用于它。
+ntop2 本身是静态编译的 Go 二进制,上面三条都不适用于它。
 
 常用参数
 --------
@@ -52,12 +52,12 @@ ntop2ban 本身是静态编译的 Go 二进制,上面三条都不适用于它。
 存储那台:
 
     NTOP2BAN_CLICKHOUSE_PASSWORD='你的密码' \
-      sudo -E ./ntop2ban -clickhouse-listen 0.0.0.0 -node-id 1 -iface eth0
+      sudo -E ./ntop2 -clickhouse-listen 0.0.0.0 -node-id 1 -iface eth0
 
 其余节点:
 
     NTOP2BAN_CLICKHOUSE_PASSWORD='同一个密码' \
-      sudo -E ./ntop2ban -clickhouse-addr 10.0.0.10:9000 -node-id 2 -iface eth0
+      sudo -E ./ntop2 -clickhouse-addr 10.0.0.10:9000 -node-id 2 -iface eth0
 
 密码只走环境变量,不做命令行参数 —— 参数会出现在 ps 的输出里。不设密码
 也能开,只会打一行警告:9000 与 8123 两个口是一起开出去的,库里是完整的
@@ -85,7 +85,7 @@ CAP_NET_RAW/CAP_NET_ADMIN。只收 sFlow/NetFlow 的话不需要 root。
 
 榜单里地址后面有个 + 号,点开选方向(入向 / 出向 / 双向)和时长(1 小时 /
 24 小时 / 7 天 / 永久),浮层里就摆出该敲的命令,复制到有权限的终端里跑。
-页面自己不执行任何东西,ntop2ban 也不需要 CAP_NET_ADMIN 才能给出这些命令。
+页面自己不执行任何东西,ntop2 也不需要 CAP_NET_ADMIN 才能给出这些命令。
 方向是相对那个地址说的:入向是不再收它的包,出向是不再发给它。
 
 命令有 nftables 和 iptables + ipset 两份,浮层上切换。时长写在 set 元素的
@@ -94,12 +94,12 @@ timeout 上,到点内核自己删;选"永久"就不写 timeout,得自己解封�
 查看和手工清理:
 
     nft list table inet ntop2ban          # 优先用这份
-    iptables -t mangle -L ntop2ban -n     # 另一份
+    iptables -t mangle -L ntop2ban -n     # 另一份(表名没跟着程序改)
 
     nft delete table inet ntop2ban        # 手工全清
 
 有几个地址封了会把自己关在门外:你正在用来访问界面的那个地址、本机地址、
-默认网关、以及 ntop2ban 自己要连的 ClickHouse 和上游 DNS。这些照样给命令,
+默认网关、以及 ntop2 自己要连的 ClickHouse 和上游 DNS。这些照样给命令,
 但浮层上会先写一句当心 —— 家里榜单第一名十有八九就是网关或 NAS 自己。
 
 要封一整片网段请在路由器上做。

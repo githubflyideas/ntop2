@@ -8,6 +8,7 @@ import (
 )
 
 // TableName 是 nftables 里那张表、以及 iptables 里那条链的名字。
+// 程序改名之后它没跟着改,理由见包注释。
 // 两边同名是故意的:出问题的时候不用先想"我这台机器走的是哪条路",
 // 直接按这个名字搜就行。
 const TableName = "ntop2ban"

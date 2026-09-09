@@ -231,7 +231,7 @@ func fetchTo(ctx context.Context, url, path string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("User-Agent", "ntop2ban/enrich-sync")
+	req.Header.Set("User-Agent", "ntop2/enrich-sync")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -1,7 +1,7 @@
-ntop2ban —— 解压即跑(macOS)
+ntop2 —— 解压即跑(macOS)
 ============================
 
-这个目录里有两个可执行文件:ntop2ban 本身,和它要用的 clickhouse。
+这个目录里有两个可执行文件:ntop2 本身,和它要用的 clickhouse。
 不需要 brew,不需要 docker。
 
 先解除 Gatekeeper 隔离 —— 这一步必须做
@@ -11,14 +11,14 @@ ntop2ban —— 解压即跑(macOS)
 二进制都带着它,直接运行会被系统拦下(clickhouse 那个尤其明显,因为它
 没有签名也没有公证)。在这个目录的上一层执行:
 
-    xattr -dr com.apple.quarantine ntop2ban-darwin-arm64
+    xattr -dr com.apple.quarantine ntop2-darwin-arm64
 
-(Intel 机器上把目录名换成 ntop2ban-darwin-amd64。)
+(Intel 机器上把目录名换成 ntop2-darwin-amd64。)
 
 跑起来
 ------
 
-    sudo ./ntop2ban -iface en0
+    sudo ./ntop2 -iface en0
 
 然后浏览器打开 http://localhost:8090
 

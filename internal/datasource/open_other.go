@@ -10,7 +10,7 @@ import (
 // ErrUnsupportedPlatform 表示当前平台没有本机抓包能力。
 //
 // 只有 Linux 有 XDP 与 AF_PACKET。但整个程序不该因此只能在 Linux 上编译:
-// ntop2ban 的另外两个输入源(sFlow、NetFlow)是纯 UDP 收包,和内核没关系,
+// ntop2 的另外两个输入源(sFlow、NetFlow)是纯 UDP 收包,和内核没关系,
 // 在 macOS 上跑一个只接收交换机/路由器导出流的实例是完全成立的用法,
 // 功能验证时尤其方便。
 //

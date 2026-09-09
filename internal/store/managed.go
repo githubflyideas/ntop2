@@ -15,15 +15,15 @@ import (
 	"time"
 )
 
-// Managed 是由 ntop2ban 拉起并托管的 ClickHouse 子进程。
+// Managed 是由 ntop2 拉起并托管的 ClickHouse 子进程。
 //
-// 发行包里 ntop2ban 与官方 clickhouse 静态二进制同目录,启动时自动拉起,
+// 发行包里 ntop2 与官方 clickhouse 静态二进制同目录,启动时自动拉起,
 // 用户体验是"拷贝即用"、不需要单独安装数据库。代价明确:发行包会从
 // 10MB 变成 ~200MB(压缩后),解开 771MB。这是刻意接受的取舍——
 // ClickHouse 现在是唯一存储,没有兜底后端,让用户自己去装数据库就等于
 // 放弃了"scp 即跑"这个产品属性。
 //
-// 不用 go:embed 把二进制塞进 ntop2ban 自身:那会让主二进制接近 1GB,
+// 不用 go:embed 把二进制塞进 ntop2 自身:那会让主二进制接近 1GB,
 // 而且每次启动都要往磁盘写几百 MB 解压。
 type Managed struct {
 	cmd     *exec.Cmd
@@ -46,7 +46,7 @@ type Managed struct {
 
 // ManagedConfig 托管子进程的参数。
 type ManagedConfig struct {
-	// BinPath clickhouse 二进制路径。空则取 ntop2ban 同目录下的 ./clickhouse。
+	// BinPath clickhouse 二进制路径。空则取 ntop2 同目录下的 ./clickhouse。
 	BinPath string
 	// DataDir 数据与配置落地目录。所有状态都在这里,删除即清空。
 	DataDir string
@@ -92,7 +92,7 @@ func StartManaged(ctx context.Context, cfg ManagedConfig) (*Managed, error) {
 	}
 	if _, err := os.Stat(cfg.BinPath); err != nil {
 		return nil, fmt.Errorf("store: 找不到 clickhouse 二进制 %q: %w"+
-			"(发行包应在 ntop2ban 同目录下附带该文件;或用 -clickhouse-addr 连接外部实例)",
+			"(发行包应在 ntop2 同目录下附带该文件;或用 -clickhouse-addr 连接外部实例)",
 			cfg.BinPath, err)
 	}
 	if cfg.DataDir == "" {
@@ -241,8 +241,8 @@ func startupHint(detail, stderrTail string) string {
 		return "\n\n这台机器的 glibc 比包里的 clickhouse 要求的旧。" +
 			"\n包里那个是官方定版构建(" + ltsFallbackVersion + "),门槛是 glibc 2.4;" +
 			"\n如果这里还是不过,说明系统实在太老,请改用外部 ClickHouse:" +
-			"\n  ./ntop2ban -clickhouse-addr <那台机器的 IP>:9000 ..." +
-			"\n(ntop2ban 自己是静态二进制,不受 glibc 影响。)"
+			"\n  ./ntop2 -clickhouse-addr <那台机器的 IP>:9000 ..." +
+			"\n(ntop2 自己是静态二进制,不受 glibc 影响。)"
 	}
 
 	// 内核太旧:定版二进制的 .note.ABI-tag 写着 Linux 3.2.0,宿主机的
@@ -251,8 +251,8 @@ func startupHint(detail, stderrTail string) string {
 	if strings.Contains(all, "kernel too old") {
 		return "\n\n这台机器的内核比包里的 clickhouse 要求的旧(它的 ABI-tag 要求 Linux 3.2)。" +
 			"\n升内核,或者改用外部 ClickHouse:" +
-			"\n  ./ntop2ban -clickhouse-addr <那台机器的 IP>:9000 ..." +
-			"\n(ntop2ban 自己是静态二进制,2.6.32 上也跑得起来。)"
+			"\n  ./ntop2 -clickhouse-addr <那台机器的 IP>:9000 ..." +
+			"\n(ntop2 自己是静态二进制,2.6.32 上也跑得起来。)"
 	}
 
 	// CPU 指令集不够:定版构建要求 x86-64-v2(SSE4.2/POPCNT)。
@@ -263,7 +263,7 @@ func startupHint(detail, stderrTail string) string {
 			"\n  curl -L -o clickhouse https://builds.clickhouse.com/master/amd64compat/clickhouse" +
 			"\n  chmod +x clickhouse" +
 			"\n那个构建对 glibc 的要求更高(2.25),两头都不满足就只能用外部" +
-			"\nClickHouse:./ntop2ban -clickhouse-addr <IP>:9000 ..."
+			"\nClickHouse:./ntop2 -clickhouse-addr <IP>:9000 ..."
 	}
 
 	return ""
@@ -297,7 +297,7 @@ func (m *Managed) markWaited() {
 }
 
 // Addr 返回 native protocol 地址。
-// Addr 是 ntop2ban 自己连过去用的地址。
+// Addr 是 ntop2 自己连过去用的地址。
 //
 // 监听 0.0.0.0 / :: 时不能把这个通配地址原样拿去 dial —— 要映回回环。
 func (m *Managed) Addr() string {
@@ -309,7 +309,7 @@ func (m *Managed) Addr() string {
 	return net.JoinHostPort(host, fmt.Sprint(m.TCPPort))
 }
 
-// Username / Password 是 ntop2ban 连自己这个内嵌实例要用的凭据。
+// Username / Password 是 ntop2 连自己这个内嵌实例要用的凭据。
 func (m *Managed) Username() string { return m.username }
 func (m *Managed) Password() string { return m.password }
 
@@ -373,7 +373,7 @@ func (m *Managed) Stop(timeout time.Duration) error {
 
 // renderServerConfig 生成最小 config.xml。
 //
-// 默认只绑 127.0.0.1 —— 内嵌存储通常只有本机的 ntop2ban 用它,少开一个
+// 默认只绑 127.0.0.1 —— 内嵌存储通常只有本机的 ntop2 用它,少开一个
 // 口就少一分要解释的事。要让别的节点写进来就设 ListenHost。
 //
 // 移除 mysql/postgresql 兼容端口与 interserver 端口:单机内嵌不需要,

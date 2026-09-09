@@ -1,4 +1,4 @@
-# ntop2ban —— 单一二进制
+# Ntop2 —— 单一二进制
 #
 # 最终用户只需要 `make build`(或直接 go build):编译好的 eBPF 目标文件
 # 已提交进版本库,不需要 clang。只有改动 bpf/*.c 的维护者才需要
@@ -48,7 +48,7 @@ go-version:
 	  fi
 
 build:
-	CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS)" -o ntop2ban ./cmd/ntop2ban
+	CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS)" -o ntop2 ./cmd/ntop2
 
 test:
 	$(GO) test ./...
@@ -78,9 +78,9 @@ bpf-verify:
 	@if ! command -v $(CLANG) >/dev/null; then \
 	  echo "跳过 bpf-verify:本机没有 $(CLANG)"; exit 0; \
 	fi; \
-	mkdir -p /tmp/ntop2ban-bpfverify && \
-	$(CLANG) $(BPF_CFLAGS) -c $(BPF_SRC) -o /tmp/ntop2ban-bpfverify/sampler.o && \
-	if ! cmp -s /tmp/ntop2ban-bpfverify/sampler.o $(BPF_OBJ); then \
+	mkdir -p /tmp/ntop2-bpfverify && \
+	$(CLANG) $(BPF_CFLAGS) -c $(BPF_SRC) -o /tmp/ntop2-bpfverify/sampler.o && \
+	if ! cmp -s /tmp/ntop2-bpfverify/sampler.o $(BPF_OBJ); then \
 	  echo "$(BPF_OBJ) 与 $(BPF_SRC) 不一致 —— 请执行 make bpf 并提交产物"; exit 1; \
 	fi; \
 	echo "bpf 目标文件与源码一致"
@@ -126,13 +126,13 @@ CH_URL_DARWIN_AMD64 ?= https://builds.clickhouse.com/master/macos/clickhouse
 ## 表现为 Mac 上只有一级采集层可用。
 release: go-version check
 	mkdir -p dist
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/ntop2ban-linux-amd64 ./cmd/ntop2ban
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/ntop2ban-linux-arm64 ./cmd/ntop2ban
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/ntop2ban-darwin-arm64 ./cmd/ntop2ban
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/ntop2ban-darwin-amd64 ./cmd/ntop2ban
-	@ls -lh dist/ntop2ban-*
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/ntop2-linux-amd64 ./cmd/ntop2
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/ntop2-linux-arm64 ./cmd/ntop2
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/ntop2-darwin-arm64 ./cmd/ntop2
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o dist/ntop2-darwin-amd64 ./cmd/ntop2
+	@ls -lh dist/ntop2-*
 
-## package: 组装"解压即跑"的大包 —— 每个包里是 ntop2ban + 同架构的
+## package: 组装"解压即跑"的大包 —— 每个包里是 ntop2 + 同架构的
 ## clickhouse 自解压二进制 + 一页 README.txt,单个 160~185MB。
 ##
 ## 为什么值得出这么大的包:目标使用者是家用 NAS 与 Mac(见 README),那些
@@ -161,8 +161,8 @@ package: release
 	    darwin-amd64) url="$(CH_URL_DARWIN_AMD64)";; \
 	    *) echo "未知打包目标 $$t"; exit 1;; \
 	  esac; \
-	  name=ntop2ban-$$t; d=dist/pkg/$$name; mkdir -p $$d; \
-	  cp dist/$$name $$d/ntop2ban; \
+	  name=ntop2-$$t; d=dist/pkg/$$name; mkdir -p $$d; \
+	  cp dist/$$name $$d/ntop2; \
 	  case $$t in \
 	    darwin-*) cp packaging/README-darwin.txt $$d/README.txt;; \
 	    *)        cp packaging/README-linux.txt  $$d/README.txt;; \
@@ -186,20 +186,20 @@ package: release
 	  echo ">> $$name.tar.gz $$(du -h dist/$$name.tar.gz | cut -f1)"; \
 	done; \
 	rmdir dist/pkg
-	cd dist && sha256sum ntop2ban-*.tar.gz > SHA256SUMS
+	cd dist && sha256sum ntop2-*.tar.gz > SHA256SUMS
 	@echo ">> 发行资产(共 5 个):"; ls -lh dist/*.tar.gz dist/SHA256SUMS
 
-## verify-packages: 复核每个包里的 ntop2ban 与 clickhouse 是不是同一个
+## verify-packages: 复核每个包里的 ntop2 与 clickhouse 是不是同一个
 ## 架构、同一个操作系统。打错架构的包在开发机上看不出任何异常,只有目标机
 ## 会报 exec format error,所以这一步必须在上传之前跑。
 verify-packages:
 	@set -e; for t in $(PKG_TARGETS); do \
-	  echo "== ntop2ban-$$t.tar.gz"; \
+	  echo "== ntop2-$$t.tar.gz"; \
 	  rm -rf /tmp/n2b-verify && mkdir -p /tmp/n2b-verify; \
-	  tar xzf dist/ntop2ban-$$t.tar.gz -C /tmp/n2b-verify; \
-	  file /tmp/n2b-verify/ntop2ban-$$t/ntop2ban /tmp/n2b-verify/ntop2ban-$$t/clickhouse \
-	    | sed "s|/tmp/n2b-verify/ntop2ban-$$t/||"; \
+	  tar xzf dist/ntop2-$$t.tar.gz -C /tmp/n2b-verify; \
+	  file /tmp/n2b-verify/ntop2-$$t/ntop2 /tmp/n2b-verify/ntop2-$$t/clickhouse \
+	    | sed "s|/tmp/n2b-verify/ntop2-$$t/||"; \
 	done; rm -rf /tmp/n2b-verify
 
 clean:
-	rm -rf dist ntop2ban
+	rm -rf dist ntop2

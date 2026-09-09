@@ -1,7 +1,7 @@
 # 嵌入的前端资源
 
 这里的文件由 `internal/api/static.go` 用 `go:embed` 编进二进制,通过
-`/static/<name>` 提供。**不用 CDN**:ntop2ban 常部署在没有出网的内网机房,
+`/static/<name>` 提供。**不用 CDN**:ntop2 常部署在没有出网的内网机房,
 一个取不到的 CDN 会让整个界面变成白屏。
 
 以 gzip 形式提交而不是原文:两者原文合计约 2.5MB、压缩后 0.4MB,而浏览器

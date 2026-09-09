@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// setName 是 ipset 里那几个集合的名字,前缀同样是 ntop2ban。
+// setName 是 ipset 里那几个集合的名字,前缀同样是 TableName。
 func setName(dir string) string { return TableName + "-" + dir }
 
 // iptSections 给出没有 nftables 时的等价写法。

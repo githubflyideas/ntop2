@@ -1,4 +1,4 @@
-/* sampler.c —— ntop2ban 的内核数据面:1/N 流量采样,入向 + 出向。
+/* sampler.c —— ntop2 的内核数据面:1/N 流量采样,入向 + 出向。
  *
  * 永远放行:这些程序只观测,不拦截。封禁不在数据面上做 —— 它走的是
  * nftables / iptables(见 internal/ban),所以这里不需要判断、不需要查任何
@@ -64,7 +64,7 @@ struct {
  *
  * TCX 是按网卡挂的,挂上就只看得见那块网卡;而 cgroup_skb/egress 挂在
  * cgroup 上,机器上**所有**网卡的出向包都会经过,包括 lo。不过滤的话
- * ntop2ban 自己往 127.0.0.1:9000 灌 ClickHouse 的流量会被当成网络流量
+ * ntop2 自己往 127.0.0.1:9000 灌 ClickHouse 的流量会被当成网络流量
  * 记下来,越忙越多,自己喂自己。 */
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);

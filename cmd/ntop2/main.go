@@ -1,4 +1,4 @@
-// Command ntop2ban —— 单机 Flow Analytics 平台。
+// Command ntop2 —— 单机 Flow Analytics 平台。
 //
 // 采集(本机 XDP/AF_PACKET、远端 sFlow v5、远端 NetFlow v5)→
 // Canonical Flow → 富化 → ClickHouse → Query Engine → Web 界面。
@@ -73,7 +73,7 @@ func main() {
 	flag.Parse()
 
 	if *showVer {
-		fmt.Println("ntop2ban", version)
+		fmt.Println("Ntop2", version)
 		return
 	}
 
@@ -93,7 +93,7 @@ func main() {
 	}
 	if genPW != "" {
 		log.Printf("未指定账号,已生成 admin 初始密码:%s", genPW)
-		log.Printf("  (仅此一次显示。下次可用 ./ntop2ban user=admin passwd=你的密码 指定)")
+		log.Printf("  (仅此一次显示。下次可用 ./ntop2 user=admin passwd=你的密码 指定)")
 	}
 	go au.SweepLoop()
 
@@ -250,7 +250,7 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
-		log.Printf("ntop2ban %s 监听 %s(输入:%v)", version, *addr, inputLabels)
+		log.Printf("Ntop2 %s 监听 %s(输入:%v)", version, *addr, inputLabels)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP 服务异常退出: %v", err)
 		}

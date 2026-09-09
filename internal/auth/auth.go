@@ -1,8 +1,8 @@
 // Package auth 是极简认证:用户名密码来自启动参数,会话只在内存里。
 //
-// 做法照搬 pingping:`./ntop2ban user=alice,bob passwd=p1,p2`,
+// 做法照搬 pingping:`./ntop2 user=alice,bob passwd=p1,p2`,
 // 没有数据库、没有注册流程、没有密码重置。理由是 v0.2 已经明确
-// ntop2ban 是单机工具,而且刚把 SQLite 整个删掉了——为了存几个账号
+// ntop2 是单机工具,而且刚把 SQLite 整个删掉了——为了存几个账号
 // 再把数据库拉回来是本末倒置。
 //
 // 会话在内存里,进程重启即全部失效。对一个单机工具完全可以接受,
