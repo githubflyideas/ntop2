@@ -54,6 +54,10 @@ const (
 	ModeSFlow Mode = "sflow"
 	// ModeNetFlow 接收远端 NetFlow v5。
 	ModeNetFlow Mode = "netflow"
+	// ModeNetFlow9 接收远端 NetFlow v9。
+	ModeNetFlow9 Mode = "netflow9"
+	// ModeIPFIX 接收远端 IPFIX (NetFlow v10)。
+	ModeIPFIX Mode = "ipfix"
 )
 
 // 默认监听端口。这两个是行业约定,但**必须可配置**——技术设计 §4.2
@@ -79,9 +83,9 @@ func ParseModes(spec string) ([]Mode, error) {
 			continue
 		}
 		switch m {
-		case ModeLocal, ModeSFlow, ModeNetFlow:
+		case ModeLocal, ModeSFlow, ModeNetFlow, ModeNetFlow9, ModeIPFIX:
 		default:
-			return nil, fmt.Errorf("未知输入模式 %q(可用:local, sflow, netflow)", m)
+			return nil, fmt.Errorf("未知输入模式 %q(可用:local, sflow, netflow, netflow9, ipfix)", m)
 		}
 		if seen[m] {
 			// 重复指定不报错但也不重复启动:两个 sflow collector 抢同一个

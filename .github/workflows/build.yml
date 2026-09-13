@@ -1,0 +1,76 @@
+name: build
+
+# 为什么要有这个 workflow:
+#
+# 开发机上没有 Go 环境,而这个项目的界面 JS 全在 Go 字符串里、
+# 解码器全是手写的字节偏移 —— 这两类错误都不会在运行前暴露。
+# 没有 CI 的话,"能不能编译"这个问题只能靠人肉读代码回答。
+#
+# 三个 job 分开而不是串成一个:build 失败时还想看到 vet 的结果,
+# 合在一起的话第一步失败就什么都看不到了。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # 手动触发:改完代码想立刻知道能不能编译,不必先造一个 commit。
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # 跟 go.mod 里的版本对齐。写 '1.22' 而不是 '1.22.5':
+          # patch 版本锁死会在 setup-go 撤下某个 patch 时无声地失败。
+          go-version: '1.22'
+          cache: true
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      # node 是界面 JS 检查(uijs_test.go)的前提。没有它那个测试会
+      # 自己跳过 —— 跳过也算通过,所以必须显式装上,否则 CI 全绿
+      # 但界面脚本从来没被检查过。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: go test
+        run: go test ./... -count=1
+
+  # gofmt 单独一个 job:格式问题不该让 build 的红叉盖住真正的编译错误。
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: gofmt -l
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then
+            echo "以下文件未格式化:"
+            echo "$out"
+            echo ""
+            echo "本地修复: gofmt -w ."
+            exit 1
+          fi

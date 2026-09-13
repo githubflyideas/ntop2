@@ -69,8 +69,24 @@ func TestParseModesDedupes(t *testing.T) {
 }
 
 func TestParseModesRejectsUnknown(t *testing.T) {
-	if _, err := ParseModes("local,ipfix"); err == nil {
+	// 这里的例子必须是一个**永远不会被实现**的名字。原来用的是 "ipfix",
+	// 等 IPFIX 真的支持了,这个测试就从"验证拒绝未知模式"变成了"验证
+	// 拒绝一个已支持的模式",然后失败——失败的还不是被测逻辑。
+	if _, err := ParseModes("local,nosuchmode"); err == nil {
 		t.Error("未知模式应报错")
+	}
+}
+
+// TestParseModesAcceptsNetFlow9AndIPFIX v9 与 IPFIX 是独立的模式:
+// 它们和 v5 不共用端口,也不共用解码器,混在一个模式里会让"到底在收
+// 哪种协议"变得不可知。
+func TestParseModesAcceptsNetFlow9AndIPFIX(t *testing.T) {
+	modes, err := ParseModes("netflow9,ipfix")
+	if err != nil {
+		t.Fatalf("ParseModes: %v", err)
+	}
+	if len(modes) != 2 || !HasMode(modes, ModeNetFlow9) || !HasMode(modes, ModeIPFIX) {
+		t.Errorf("got %v", modes)
 	}
 }
 

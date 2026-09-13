@@ -36,7 +36,7 @@ func main() {
 		addr    = flag.String("addr", ":8090", "Web 监听地址")
 		dataDir = flag.String("data-dir", "./ntop2ban-data", "数据目录")
 
-		input = flag.String("input", "local", "输入源:local(本机抓包)| sflow | netflow;逗号分隔可同时启用")
+		input = flag.String("input", "local", "输入源:local(本机抓包)| sflow | netflow | netflow9 | ipfix;逗号分隔可同时启用")
 
 		iface   = flag.String("iface", "", "本机抓包的网卡。XDP 与 macOS 的 BPF 设备都必须指定")
 		sampleN = flag.Int("sampling", datasource.DefaultSamplingN,
@@ -44,8 +44,10 @@ func main() {
 				"macOS 上 1(BSD 的 BPF 没有内核随机数扩展,抽样省不下多少却白扣精度)")
 		prefer = flag.String("datasource", "", "强制指定本机采集层:xdp-native | xdp-generic | af-packet | bpf-device(macOS)")
 
-		sflowListen   = flag.String("sflow-listen", fmt.Sprintf(":%d", collector.DefaultSFlowPort), "sFlow v5 监听地址")
-		netflowListen = flag.String("netflow-listen", fmt.Sprintf(":%d", collector.DefaultNetFlowPort), "NetFlow v5 监听地址")
+		sflowListen    = flag.String("sflow-listen", fmt.Sprintf(":%d", collector.DefaultSFlowPort), "sFlow v5 监听地址")
+		netflowListen  = flag.String("netflow-listen", fmt.Sprintf(":%d", collector.DefaultNetFlowPort), "NetFlow v5 监听地址")
+		netflow9Listen = flag.String("netflow9-listen", fmt.Sprintf(":%d", collector.DefaultNetFlow9Port), "NetFlow v9 监听地址")
+		ipfixListen    = flag.String("ipfix-listen", fmt.Sprintf(":%d", collector.DefaultIPFIXPort), "IPFIX 监听地址")
 
 		chAddr   = flag.String("clickhouse-addr", "", "外部 ClickHouse 地址;留空则托管同目录下的 clickhouse 二进制")
 		chBin    = flag.String("clickhouse-bin", "", "clickhouse 二进制路径")
@@ -240,6 +242,22 @@ func main() {
 			reporters = append(reporters, rp)
 		}
 	}
+	if collector.HasMode(modes, collector.ModeNetFlow9) {
+		if rp, l, err := startNetFlow9(ctx, sinkFor(collector.ModeNetFlow9), *netflow9Listen); err != nil {
+			log.Printf("NetFlow v9 未启动: %v", err)
+		} else {
+			inputLabels = append(inputLabels, l)
+			reporters = append(reporters, rp)
+		}
+	}
+	if collector.HasMode(modes, collector.ModeIPFIX) {
+		if rp, l, err := startIPFIX(ctx, sinkFor(collector.ModeIPFIX), *ipfixListen); err != nil {
+			log.Printf("IPFIX 未启动: %v", err)
+		} else {
+			inputLabels = append(inputLabels, l)
+			reporters = append(reporters, rp)
+		}
+	}
 
 	srv := api.New(api.Config{
 		Stores: stores, DefaultSource: string(modes[0]),
@@ -373,6 +391,36 @@ func startNetFlow(ctx context.Context, sink *enrichingSink, listen string) (coll
 	}()
 	go func() { <-ctx.Done(); _ = src.Close() }()
 	return src, "netflow" + listen, nil
+}
+
+func startNetFlow9(ctx context.Context, sink *enrichingSink, listen string) (collector.Reporter, string, error) {
+	src, err := collector.NewNetFlow9Source(collector.NetFlow9Config{Listen: listen, Sink: sink})
+	if err != nil {
+		return nil, "", err
+	}
+	log.Printf("NetFlow v9 监听 %s", listen)
+	go func() {
+		if err := src.Run(ctx); err != nil {
+			log.Printf("NetFlow v9 退出: %v", err)
+		}
+	}()
+	go func() { <-ctx.Done(); _ = src.Close() }()
+	return src, "netflow9" + listen, nil
+}
+
+func startIPFIX(ctx context.Context, sink *enrichingSink, listen string) (collector.Reporter, string, error) {
+	src, err := collector.NewIPFIXSource(collector.NetFlow9Config{Listen: listen, Sink: sink})
+	if err != nil {
+		return nil, "", err
+	}
+	log.Printf("IPFIX 监听 %s", listen)
+	go func() {
+		if err := src.Run(ctx); err != nil {
+			log.Printf("IPFIX 退出: %v", err)
+		}
+	}()
+	go func() { <-ctx.Done(); _ = src.Close() }()
+	return src, "ipfix" + listen, nil
 }
 
 // openStore 打开存储。指定 -clickhouse-addr 连外部实例,否则托管子进程。
