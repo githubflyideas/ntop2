@@ -8,6 +8,11 @@ name: build
 #
 # 三个 job 分开而不是串成一个:build 失败时还想看到 vet 的结果,
 # 合在一起的话第一步失败就什么都看不到了。
+#
+# 每个可能失败的步骤都把输出复制进一条 ::error:: annotation。
+# 理由:job 日志的下载接口要求仓库 admin 权限,而 annotation 走
+# /check-runs/{id}/annotations,公开仓库匿名可读。没有本地 Go 的时候
+# 这是唯一能拿到编译/测试错误原文的通道,日志本身看不到。
 
 on:
   push:
@@ -31,10 +36,28 @@ jobs:
           cache: true
 
       - name: go build
-        run: go build ./...
+        run: |
+          set +e
+          out=$(go build ./... 2>&1)
+          code=$?
+          echo "$out"
+          if [ $code -ne 0 ]; then
+            esc=$(printf '%s' "$out" | tail -n 100 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=go build 失败::$esc"
+          fi
+          exit $code
 
       - name: go vet
-        run: go vet ./...
+        run: |
+          set +e
+          out=$(go vet ./... 2>&1)
+          code=$?
+          echo "$out"
+          if [ $code -ne 0 ]; then
+            esc=$(printf '%s' "$out" | tail -n 100 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=go vet 失败::$esc"
+          fi
+          exit $code
 
   test:
     runs-on: ubuntu-latest
@@ -54,7 +77,18 @@ jobs:
           node-version: '20'
 
       - name: go test
-        run: go test ./... -count=1
+        run: |
+          set +e
+          out=$(go test ./... -count=1 2>&1)
+          code=$?
+          echo "$out"
+          if [ $code -ne 0 ]; then
+            # 只留失败相关的行:annotation 有长度上限,把 ok/no test files
+            # 那些成功行塞进去会把真正的报错挤掉。
+            esc=$(printf '%s' "$out" | grep -v -E '^(ok|\?)[[:space:]]' | tail -n 120 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=go test 失败::$esc"
+          fi
+          exit $code
 
   # gofmt 单独一个 job:格式问题不该让 build 的红叉盖住真正的编译错误。
   fmt:
@@ -70,6 +104,11 @@ jobs:
           if [ -n "$out" ]; then
             echo "以下文件未格式化:"
             echo "$out"
+            # 连 diff 一起放进 annotation:光有文件名的话,没有 gofmt 的
+            # 机器上只能猜是哪一行对不齐,改一次要等一轮 CI。
+            diff=$(gofmt -d . | head -c 8000)
+            esc=$(printf '%s\n\n%s' "$out" "$diff" | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=gofmt 未格式化::$esc"
             echo ""
             echo "本地修复: gofmt -w ."
             exit 1

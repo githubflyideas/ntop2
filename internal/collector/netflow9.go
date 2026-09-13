@@ -52,18 +52,22 @@ import (
 // ---- 协议常量 -------------------------------------------------------
 
 const (
-	nfV9Version   = 9
-	ipfixVersion  = 10
+	nfV9Version  = 9
+	ipfixVersion = 10
 
-	// FlowSet / Set ID 的固定值。
-	nfV9TemplateFlowSetID  = 0    // v9 Template FlowSet
-	nfV9OptionsFlowSetID   = 1    // v9 Options Template FlowSet
-	ipfixTemplateSetID     = 2    // IPFIX Template Set
-	ipfixOptionsSetID      = 3    // IPFIX Options Template Set
-	nfDataSetIDMin         = 256  // Data FlowSet/Set 的 ID 从 256 开始
+	// FlowSet / Set ID 的固定值。0/1 是 v9 的 Template / Options Template
+	// FlowSet,2/3 是 IPFIX 的 Template / Options Template Set,
+	// 真正装数据的 FlowSet/Set 的 ID 从 256 起。
+	nfV9TemplateFlowSetID = 0
+	nfV9OptionsFlowSetID  = 1
+	ipfixTemplateSetID    = 2
+	ipfixOptionsSetID     = 3
+	nfDataSetIDMin        = 256
 
-	nfV9HeaderLen  = 20 // version(2)+count(2)+sysUptime(4)+unixSecs(4)+seqNum(4)+srcID(4)
-	ipfixHeaderLen = 16 // version(2)+length(2)+exportTime(4)+seqNum(4)+domainID(4)
+	// v9 头 20 字节:version(2)+count(2)+sysUptime(4)+unixSecs(4)+seqNum(4)+srcID(4)
+	// IPFIX 头 16 字节:version(2)+length(2)+exportTime(4)+seqNum(4)+domainID(4)
+	nfV9HeaderLen  = 20
+	ipfixHeaderLen = 16
 )
 
 // ---- IANA 信息元素(IE)编号 → Canonical Flow 字段映射 --------------
@@ -87,13 +91,14 @@ const (
 	ieOctetCount64  nfIEID = 85
 	iePacketCount64 nfIEID = 86
 
-	// 时间(v9 相对 sysUptime 毫秒;IPFIX 绝对 Unix 秒/毫秒)
-	ieFlowStart    nfIEID = 22 // v9: sysUptime ms
-	ieFlowEnd      nfIEID = 21 // v9: sysUptime ms
-	ieFlowStartSec nfIEID = 150 // IPFIX: Unix seconds
-	ieFlowEndSec   nfIEID = 151 // IPFIX: Unix seconds
-	ieFlowStartMs  nfIEID = 152 // IPFIX: Unix ms
-	ieFlowEndMs    nfIEID = 153 // IPFIX: Unix ms
+	// 时间。v9 的 22/21 是相对 sysUptime 的毫秒;
+	// IPFIX 的 150/151 是 Unix 秒,152/153 是 Unix 毫秒。
+	ieFlowStart    nfIEID = 22
+	ieFlowEnd      nfIEID = 21
+	ieFlowStartSec nfIEID = 150
+	ieFlowEndSec   nfIEID = 151
+	ieFlowStartMs  nfIEID = 152
+	ieFlowEndMs    nfIEID = 153
 
 	// 接口
 	ieInputInterface  nfIEID = 10
@@ -102,13 +107,13 @@ const (
 	// TCP flags
 	ieTCPFlags nfIEID = 6
 
-	// 采样率(SamplingInterval,Cisco 私有字段在 v9 里也用标准 ID)
-	ieSamplingInterval nfIEID = 34
+	// 采样率(Cisco 私有字段在 v9 里也用这两个标准 ID)
+	ieSamplingInterval  nfIEID = 34
 	ieSamplingAlgorithm nfIEID = 35
 
-	// BGP
-	ieBGPNextHop     nfIEID = 18  // IPv4 BGP next-hop
-	ieBGPNextHopIPv6 nfIEID = 63  // IPv6 BGP next-hop
+	// BGP。18/63 是 IPv4/IPv6 next-hop,16/17 是源/目的 AS。
+	ieBGPNextHop     nfIEID = 18
+	ieBGPNextHopIPv6 nfIEID = 63
 	ieBGPSrcAS       nfIEID = 16
 	ieBGPDstAS       nfIEID = 17
 )
@@ -123,11 +128,12 @@ type templateKey struct {
 }
 
 // fieldSpec 描述模板中的一个字段:IE ID 与长度。
+//
+// enterprise 非零时是 IPFIX 企业私有字段,id 是企业内部编号。
+// 这里只记录长度用于跳过,不做解析。
 type fieldSpec struct {
-	id     nfIEID
-	length uint16
-	// enterprise 非零时是 IPFIX 企业私有字段,id 是企业内部编号。
-	// 这里只记录长度用于跳过,不做解析。
+	id         nfIEID
+	length     uint16
 	enterprise uint32
 }
 
@@ -497,13 +503,15 @@ func decodeRecord(
 	}
 
 	off := 0
+	// v9 用相对 sysUptime 的毫秒,IPFIX 用绝对时间;两套都可能缺,
+	// 所以各带一个 has 标志,最后统一决定 Start/End。
 	var (
-		flowStartRel, flowEndRel uint32   // v9 相对毫秒
-		flowStartAbs, flowEndAbs uint64   // IPFIX 绝对时间
-		hasStartRel, hasEndRel   bool
-		hasStartAbs, hasEndAbs   bool
+		flowStartRel, flowEndRel   uint32
+		flowStartAbs, flowEndAbs   uint64
+		hasStartRel, hasEndRel     bool
+		hasStartAbs, hasEndAbs     bool
 		bgpNextHopV4, bgpNextHopV6 net.IP
-		srcAS, dstAS uint32
+		srcAS, dstAS               uint32
 	)
 
 	for _, fs := range tmpl.fields {
