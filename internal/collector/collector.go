@@ -24,6 +24,16 @@ type Sink interface {
 	Append(ctx context.Context, batch []flow.Flow) error
 }
 
+// CounterSink 接收 sFlow 的接口计数器快照。
+//
+// 与 Sink 分开而不是加进同一个接口:只有 sFlow 有 counter sample,
+// 本机采集和 NetFlow v5 都没有。合成一个接口会逼着另外两个输入实现
+// 一个对它们没意义的方法,而那个方法体只能是 return nil —— 一个永远
+// 不会被调用、也没人知道该不该维护的空函数。
+type CounterSink interface {
+	AppendCounters(ctx context.Context, batch []flow.IfCounters) error
+}
+
 // Source 是一个输入源。
 type Source interface {
 	// Name 用于日志与界面展示。

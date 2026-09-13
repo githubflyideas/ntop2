@@ -52,7 +52,10 @@ func main() {
 		chBin    = flag.String("clickhouse-bin", "", "clickhouse 二进制路径")
 		chListen = flag.String("clickhouse-listen", "127.0.0.1",
 			"内嵌 ClickHouse 的监听地址;填 0.0.0.0 让别的节点写进来")
-		chUser    = flag.String("clickhouse-user", "default", "ClickHouse 账号")
+		chUser  = flag.String("clickhouse-user", "default", "ClickHouse 账号")
+		chDBPfx = flag.String("clickhouse-db", "ntop2",
+			"ClickHouse 库名前缀。每种输入各占一个库:<前缀>_sflow / <前缀>_netflow / <前缀>_local。"+
+				"分库是为了让三种来源的数字物理上加不到一起,不是因为表结构不同(它们相同)")
 		retention = flag.Int("retention-days", 90, "明细数据保留天数")
 		nodeID    = flag.Uint("node-id", 0,
 			"本节点编号。多个节点往同一个 ClickHouse 写时各给一个,否则分不清数据来自哪台机器")
@@ -177,19 +180,21 @@ func main() {
 		log.Println("注意:" + w)
 	}
 
-	st, chStop, err := openStore(ctx, storeOpts{
-		addr: *chAddr, bin: *chBin, dataDir: *dataDir, retentionDays: *retention,
-		listen: *chListen, username: *chUser, password: chPass,
-	})
+	stores, chStop, err := openStores(ctx, storeOpts{
+		addr: *chAddr, dbPrefix: *chDBPfx, bin: *chBin, dataDir: *dataDir,
+		retentionDays: *retention,
+		listen:        *chListen, username: *chUser, password: chPass,
+	}, modes)
 	if err != nil {
 		log.Fatalf("初始化存储失败: %v", err)
 	}
 	defer chStop()
-	defer st.Close()
 
-	if s, err := st.Stats(ctx); err == nil {
-		log.Printf("存储就绪:flows %d 行,磁盘 %.2f GB(压缩后),保留 %d 天",
-			s.TotalRows, s.CompressedGB, *retention)
+	for _, m := range modes {
+		if s, err := stores[string(m)].Stats(ctx); err == nil {
+			log.Printf("存储就绪(%s):flows %d 行,磁盘 %.2f GB(压缩后),保留 %d 天",
+				m, s.TotalRows, s.CompressedGB, *retention)
+		}
 	}
 
 	// 实时缓冲挂在写库前面。放在这里而不是让存储层去喂它,是为了让"看得
@@ -197,9 +202,13 @@ func main() {
 	// 最需要看实况的时候。
 	feed := live.New(0)
 
-	// 富化包在存储前面:sink 收到 flow 先富化再写库。
-	sink := &enrichingSink{st: st, en: enrich.NewEnricher(asnDB, mmdb, cityDB),
-		nodeID: uint32(*nodeID), feed: feed}
+	// 富化器只建一份,三个 sink 共用 —— ip2asn 与 city 库加起来几十 MB,
+	// 每种输入各持有一份纯属浪费,而且内容完全一样。
+	enricher := enrich.NewEnricher(asnDB, mmdb, cityDB)
+	sinkFor := func(m collector.Mode) *enrichingSink {
+		return &enrichingSink{st: stores[string(m)], en: enricher,
+			nodeID: uint32(*nodeID), feed: feed}
+	}
 	if *nodeID != 0 {
 		log.Printf("本节点编号 %d —— 界面上按 device_id 分组即可区分各节点", *nodeID)
 	}
@@ -211,13 +220,13 @@ func main() {
 	var reporters []collector.Reporter
 
 	if collector.HasMode(modes, collector.ModeLocal) {
-		label := startLocal(ctx, sink, localConfig{
+		label := startLocal(ctx, sinkFor(collector.ModeLocal), localConfig{
 			iface: *iface, samplingN: *sampleN, prefer: datasource.Mode(*prefer),
 		})
 		inputLabels = append(inputLabels, label)
 	}
 	if collector.HasMode(modes, collector.ModeSFlow) {
-		if rp, l, err := startSFlow(ctx, sink, *sflowListen); err != nil {
+		if rp, l, err := startSFlow(ctx, sinkFor(collector.ModeSFlow), stores[string(collector.ModeSFlow)], *sflowListen); err != nil {
 			log.Printf("sFlow 未启动: %v", err)
 		} else {
 			inputLabels = append(inputLabels, l)
@@ -225,7 +234,7 @@ func main() {
 		}
 	}
 	if collector.HasMode(modes, collector.ModeNetFlow) {
-		if rp, l, err := startNetFlow(ctx, sink, *netflowListen); err != nil {
+		if rp, l, err := startNetFlow(ctx, sinkFor(collector.ModeNetFlow), *netflowListen); err != nil {
 			log.Printf("NetFlow 未启动: %v", err)
 		} else {
 			inputLabels = append(inputLabels, l)
@@ -234,7 +243,8 @@ func main() {
 	}
 
 	srv := api.New(api.Config{
-		Store: st, Auth: au, ASN: asnDB, MMDB: mmdb,
+		Stores: stores, DefaultSource: string(modes[0]),
+		Auth: au, ASN: asnDB, MMDB: mmdb,
 		City: cityDB, Syncer: syncer,
 		DataDir: *dataDir, Inputs: inputLabels, Version: version,
 		Feed: feed, Reporters: reporters, DNS: resolver,
@@ -337,8 +347,10 @@ func startLocal(ctx context.Context, sink *enrichingSink, cfg localConfig) strin
 	return "local/" + string(src.Mode())
 }
 
-func startSFlow(ctx context.Context, sink *enrichingSink, listen string) (collector.Reporter, string, error) {
-	src, err := collector.NewSFlowSource(collector.SFlowConfig{Listen: listen, Sink: sink})
+// startSFlow 里 counters 直接接 *store.Store,不经过 enrichingSink:
+// 接口计数器是设备自报的权威值,没有 IP 可以富化,也不该被富化。
+func startSFlow(ctx context.Context, sink *enrichingSink, counters collector.CounterSink, listen string) (collector.Reporter, string, error) {
+	src, err := collector.NewSFlowSource(collector.SFlowConfig{Listen: listen, Sink: sink, Counters: counters})
 	if err != nil {
 		return nil, "", err
 	}
@@ -372,6 +384,7 @@ func startNetFlow(ctx context.Context, sink *enrichingSink, listen string) (coll
 // 位置参数排错一个类型相同的(addr/bin/dataDir 全是 string)编译器不会说话。
 type storeOpts struct {
 	addr          string // 非空则连外部实例,不托管
+	dbPrefix      string
 	bin           string
 	dataDir       string
 	retentionDays int
@@ -380,47 +393,102 @@ type storeOpts struct {
 	password      string
 }
 
-func openStore(ctx context.Context, o storeOpts) (*store.Store, func(), error) {
+// openStores 为每种输入各打开一个库,共用同一个 ClickHouse 实例。
+//
+// 为什么是"一个实例 + 多个库",而不是"多个进程 + 多个实例":
+// 内嵌的那份 clickhouse 首次运行要展开到 770MB 左右,还要带一套 merge
+// 线程池。按输入起三个进程就是三份展开、三套 merge、外加三份 GeoIP 库
+// 常驻内存(ip2asn + city 加起来几十 MB,而它们的内容完全一样)。
+// 一个进程里开三个库,这些全都只有一份。
+//
+// 为什么是"多个库",而不是"一张表加 source_type 区分":
+// 三种来源的 packets/bytes 口径不同(sFlow 是单个采样包按采样率还原的
+// 估算值,NetFlow v5 是设备侧的流计数,本机采集是抽样后的聚合)。同一张
+// 表里,任何一个忘了带 source_type 的聚合都会把它们加起来,得到一个
+// 不报错但没有意义的数字。分库之后这件事在物理上就不可能发生 ——
+// 查询引擎生成的 SQL 永远不带库名,连接绑在哪个库就只能看见哪个库。
+//
+// 为什么是"多个库",而不是"多张表":
+// 三个库的 schema 完全相同,store.Open 本来就按 Config.Database 建表,
+// schema.go、compile.go 一行都不用改。换成多张表就要把表名参数化穿过
+// 整个查询层,换来的是同一件事。
+func openStores(ctx context.Context, o storeOpts, modes []collector.Mode) (map[string]*store.Store, func(), error) {
 	noop := func() {}
 
-	if o.addr != "" {
-		st, err := store.Open(ctx, store.Config{
-			Addr: o.addr, Database: "ntop2ban",
-			Username: o.username, Password: o.password,
-			AutoCreateDatabase: true, RetentionDays: o.retentionDays,
+	if !validIdent(o.dbPrefix) {
+		return nil, noop, fmt.Errorf("库名前缀 %q 非法:只允许字母、数字、下划线,且不能以数字开头", o.dbPrefix)
+	}
+
+	addr := o.addr
+	stop := noop
+
+	if addr == "" {
+		managed, err := store.StartManaged(ctx, store.ManagedConfig{
+			BinPath: o.bin, DataDir: filepath.Join(o.dataDir, "clickhouse"),
+			ListenHost: o.listen, Username: o.username, Password: o.password,
 		})
 		if err != nil {
 			return nil, noop, err
 		}
-		log.Printf("已连接外部 ClickHouse %s", o.addr)
-		return st, noop, nil
-	}
-
-	managed, err := store.StartManaged(ctx, store.ManagedConfig{
-		BinPath: o.bin, DataDir: filepath.Join(o.dataDir, "clickhouse"),
-		ListenHost: o.listen, Username: o.username, Password: o.password,
-	})
-	if err != nil {
-		return nil, noop, err
-	}
-	log.Printf("已托管内嵌 ClickHouse(native %s)", managed.Addr())
-
-	st, err := store.Open(ctx, store.Config{
-		Addr: managed.Addr(), Database: "ntop2ban",
-		Username: managed.Username(), Password: managed.Password(),
-		AutoCreateDatabase: true, RetentionDays: o.retentionDays,
-	})
-	if err != nil {
-		_ = managed.Stop(10 * time.Second)
-		return nil, noop, err
-	}
-	return st, func() {
-		if err := managed.Stop(20 * time.Second); err != nil {
-			log.Printf("停止托管 ClickHouse: %v", err)
-		} else {
-			log.Println("托管 ClickHouse 已停止")
+		log.Printf("已托管内嵌 ClickHouse(native %s)", managed.Addr())
+		addr, o.username, o.password = managed.Addr(), managed.Username(), managed.Password()
+		stop = func() {
+			if err := managed.Stop(20 * time.Second); err != nil {
+				log.Printf("停止托管 ClickHouse: %v", err)
+			} else {
+				log.Println("托管 ClickHouse 已停止")
+			}
 		}
-	}, nil
+	} else {
+		log.Printf("使用外部 ClickHouse %s", addr)
+	}
+
+	out := make(map[string]*store.Store, len(modes))
+	closeAll := func() {
+		for _, st := range out {
+			_ = st.Close()
+		}
+		stop()
+	}
+
+	for _, m := range modes {
+		db := o.dbPrefix + "_" + string(m)
+		st, err := store.Open(ctx, store.Config{
+			Addr: addr, Database: db,
+			Username: o.username, Password: o.password,
+			AutoCreateDatabase: true, RetentionDays: o.retentionDays,
+		})
+		if err != nil {
+			closeAll()
+			return nil, noop, fmt.Errorf("打开库 %s: %w", db, err)
+		}
+		log.Printf("输入 %s -> 库 %s", m, db)
+		out[string(m)] = st
+	}
+	return out, closeAll, nil
+}
+
+// validIdent 校验库名前缀。
+//
+// CREATE DATABASE 无法用占位参数绑定,库名只能拼进 SQL。在这里限死
+// 只允许 [A-Za-z0-9_] 且不以数字开头,任何转义都不需要,也就没有
+// 转义写错的可能。
+func validIdent(s string) bool {
+	if s == "" || len(s) > 48 {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func fileExists(p string) bool {

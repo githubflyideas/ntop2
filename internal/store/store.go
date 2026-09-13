@@ -154,6 +154,17 @@ func (s *Store) SetRetention(ctx context.Context, days int) error {
 	if err := s.conn.Exec(ctx, sql); err != nil {
 		return fmt.Errorf("store: 设置明细表保留期 %d 天: %w", days, err)
 	}
+
+	// 接口计数器跟着明细表同一个保留期。
+	//
+	// 单独给它一个更长的保留期是有道理的(每接口每 30 秒一行,存一年也
+	// 没多少),但那需要一个新旗标,而多一个旗标就多一个能配错的地方。
+	// 等有人真的提出要长期留计数器再说。
+	sql = fmt.Sprintf(
+		"ALTER TABLE if_counters MODIFY TTL toDateTime(timestamp) + INTERVAL %d DAY", days)
+	if err := s.conn.Exec(ctx, sql); err != nil {
+		return fmt.Errorf("store: 设置接口计数器表保留期 %d 天: %w", days, err)
+	}
 	return nil
 }
 

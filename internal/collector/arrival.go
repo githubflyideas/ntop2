@@ -30,6 +30,14 @@ type Arrival struct {
 	// "版本 9 不是 NetFlow v5" 这半句话就是答案,转述会丢掉它。
 	LastBad time.Time
 	BadWhy  string
+	// Counters 收到的接口计数器快照条数(只有 sFlow 有)。
+	//
+	// 单独数而不是并进 Records:设备只发 counter sample 不发 flow sample
+	// 是一种真实存在的配置(采样没开、或者只开了 counter polling),
+	// 那种情况下 Records 恒为 0,看起来跟"设备根本没在发"一模一样。
+	// 分开数就能一眼区分:包在进、计数器在涨、流记录是 0 —— 去检查
+	// 设备上的采样率配置,而不是检查网络。
+	Counters int64
 }
 
 // Reporter 是能报告到达情况的输入源。
@@ -74,6 +82,16 @@ func (c *counter) bad(err error) {
 	if err != nil {
 		c.a.BadWhy = err.Error()
 	}
+	c.mu.Unlock()
+}
+
+// counters 记收到的接口计数器条数。
+func (c *counter) counters(n int) {
+	if n == 0 {
+		return
+	}
+	c.mu.Lock()
+	c.a.Counters += int64(n)
 	c.mu.Unlock()
 }
 

@@ -50,20 +50,22 @@ type flowAgg struct {
 	lastSeen  time.Time
 	// tcpFlags 是窗口内所有包的按位或:一条流里 SYN 与 FIN 分别在不同
 	// 的包上,取任意单个包的 flags 都会丢掉另一半信息。
-	tcpFlags uint16
-	vlan     uint16
+	tcpFlags  uint16
+	vlan      uint16
+	innerVLAN uint16
 }
 
 // Observation 是一个已解析的包,由各数据源投喂。
 type Observation struct {
-	SrcIP    [4]byte
-	DstIP    [4]byte
-	SrcPort  uint16
-	DstPort  uint16
-	Proto    uint8 // IANA 协议号
-	Length   int
-	TCPFlags uint16
-	VLAN     uint16
+	SrcIP     [4]byte
+	DstIP     [4]byte
+	SrcPort   uint16
+	DstPort   uint16
+	Proto     uint8 // IANA 协议号
+	Length    int
+	TCPFlags  uint16
+	VLAN      uint16
+	InnerVLAN uint16
 
 	// Packets 是这一次观测代表的网线包数。0 视同 1。
 	//
@@ -133,7 +135,7 @@ func (a *aggregator) add(o Observation) {
 	a.flows[k] = &flowAgg{
 		pkts: pkts, bytes: int64(o.Length),
 		firstSeen: now, lastSeen: now,
-		tcpFlags: o.TCPFlags, vlan: o.VLAN,
+		tcpFlags: o.TCPFlags, vlan: o.VLAN, innerVLAN: o.InnerVLAN,
 	}
 }
 
@@ -167,6 +169,7 @@ func (a *aggregator) flush(ctx context.Context) {
 			SourceType:   flow.SourceLocalXDP,
 			TCPFlags:     agg.tcpFlags,
 			VLAN:         agg.vlan,
+			InnerVLAN:    agg.innerVLAN,
 		}
 		// 按采样率还原估算值,同时保留实测值(见 flow.ApplySampling)。
 		f.ApplySampling()

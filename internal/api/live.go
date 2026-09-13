@@ -105,7 +105,7 @@ func arrivalJSON(list []namedArrival) []map[string]any {
 	for _, na := range list {
 		a := na.A
 		m := map[string]any{"name": na.Name, "packets": a.Packets,
-			"bad": a.Bad, "records": a.Records}
+			"bad": a.Bad, "records": a.Records, "counters": a.Counters}
 		if na.Source != "" {
 			m["source"] = na.Source
 		}
@@ -203,6 +203,15 @@ func liveFindings(snap live.Snapshot, arrivals []namedArrival, now time.Time) []
 				Title: na.Name + ":一个包也没收到",
 				Detail: "端口是通的(在监听),但上游设备还没往这里发过东西。" +
 					"检查设备上的采集器地址与端口是否指向本机,以及中间有没有防火墙。"})
+		case a.Records == 0 && a.Counters > 0:
+			// 只发 counter 不发 flow:设备在正常上报,但采样没开。
+			// 这跟"设备没在发"长得一模一样(流记录都是 0),而处置
+			// 完全不同 —— 前者去设备上配采样率,后者去查网络。
+			fs = append(fs, Finding{Level: LevelWarn,
+				Title: na.Name + ":只收到接口计数器,没有流记录",
+				Detail: "设备在正常上报(已收到 " + itoa(a.Counters) + " 条接口计数器)," +
+					"但一条流采样都没发过来。原因几乎都是设备上只开了 counter polling," +
+					"没开 packet sampling。去设备上给相应端口配一个采样率即可。"})
 		case a.Records == 0 && a.Bad > 0:
 			fs = append(fs, Finding{Level: LevelWarn,
 				Title: na.Name + ":收到 " + itoa(a.Packets) + " 个包,一条也解不开",
@@ -213,9 +222,14 @@ func liveFindings(snap live.Snapshot, arrivals []namedArrival, now time.Time) []
 				Title:  na.Name + ":有 " + itoa(a.Bad) + " 个包解不开(共 " + itoa(a.Packets) + " 个)",
 				Detail: "多数包正常,少数解不开通常是另有一台设备往同一个端口发别的版本。\n最近一次:" + a.BadWhy})
 		default:
+			detail := "上报正常。"
+			if a.Counters > 0 {
+				detail += "另有 " + itoa(a.Counters) + " 条接口计数器 —— 那是设备自报的" +
+					"权威字节数,可以用来核对采样估算出来的流量对不对。"
+			}
 			fs = append(fs, Finding{Level: LevelOK,
 				Title:  na.Name + ":收到 " + itoa(a.Packets) + " 个包,解出 " + itoa(a.Records) + " 条记录",
-				Detail: "上报正常。"})
+				Detail: detail})
 		}
 	}
 

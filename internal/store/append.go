@@ -130,3 +130,48 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	}
 	return st, nil
 }
+
+// AppendCounters 写一批接口计数器快照。
+//
+// 与 Append 分开而不是做成泛型:两者的批量规模差几个数量级(flow 每秒
+// 几千行,counter 每台设备每 30 秒几十行),批大小、刷新间隔、以及
+// 失败时该不该丢都不一样。硬凑成一个接口只会让两边都别扭。
+func (s *Store) AppendCounters(ctx context.Context, batch []flow.IfCounters) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
+	b, err := s.conn.PrepareBatch(ctx, "INSERT INTO if_counters")
+	if err != nil {
+		return fmt.Errorf("store: prepare counters batch: %w", err)
+	}
+
+	for i := range batch {
+		c := &batch[i]
+		if err := b.Append(
+			c.Timestamp,
+			c.DeviceID,
+			c.IfIndex,
+			c.IfType,
+			c.IfSpeed,
+			uint8(c.IfDirection),
+			uint8(c.IfStatus),
+			c.InOctets,
+			c.InUcastPkts,
+			c.InMcastPkts,
+			c.InBcastPkts,
+			c.InDiscards,
+			c.InErrors,
+			c.InUnknownPro,
+			c.OutOctets,
+			c.OutUcastPkts,
+			c.OutMcastPkts,
+			c.OutBcastPkts,
+			c.OutDiscards,
+			c.OutErrors,
+		); err != nil {
+			return fmt.Errorf("store: append counters row: %w", err)
+		}
+	}
+	return b.Send()
+}

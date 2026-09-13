@@ -54,7 +54,11 @@ type Packet struct {
 
 	SrcMAC string
 	DstMAC string
-	VLAN   uint16
+
+	// VLAN 是采样点看到的最外层 tag,InnerVLAN 是 QinQ 内层的 C-VLAN。
+	// 单层帧只填 VLAN,InnerVLAN 保持 0。
+	VLAN      uint16
+	InnerVLAN uint16
 }
 
 // ParseEthernet 解析以太网帧(含 VLAN tag 的情况)。
@@ -70,16 +74,64 @@ func ParseEthernet(frame []byte) (Packet, error) {
 	etherType := binary.BigEndian.Uint16(frame[12:14])
 	offset := EthHdrLen
 
-	// 802.1Q VLAN tag:ethertype 0x8100,后面 4 字节是 tag + 真正的
-	// ethertype。不处理的话带 tag 的帧会被当成"非 IPv4"整个丢掉,
-	// 而交换机镜像口上的流量常常是带 tag 的。
-	if etherType == 0x8100 || etherType == 0x88a8 {
+	// VLAN tag 剥离。
+	//
+	// 只剥一层是不够的:QinQ 帧外层是 0x88a8(或某些设备用 0x8100)的
+	// S-VLAN,内层还有一个 0x8100 的 C-VLAN。剥掉外层之后 etherType
+	// 仍然是 0x8100,按"非 IPv4"整个丢掉 —— 而且是静默丢掉,表现为
+	// 汇聚口和运营商侧的流量凭空少一大块。
+	//
+	// 外层记进 VLAN,内层记进 InnerVLAN。方向刻意选"外层进 VLAN"而不是
+	// 反过来:单层帧里那唯一的一个 tag 也记在 VLAN,两种情况下 VLAN 都是
+	// "采样点这个端口实际看到的 tag"。若把内层记进 VLAN,同一份客户流量
+	// 会因为有没有跨 QinQ 边界而在同一列里显示不同的值。
+	//
+	// 层数封顶:tag 链的长度由帧内容决定,不设上限的话一个构造出来的
+	// (或损坏的)帧能让这里一直转下去。现实里超过两层的 tag 不存在。
+	const maxVLANTags = 2
+	for tags := 0; tags < maxVLANTags; tags++ {
+		if etherType != 0x8100 && etherType != 0x88a8 && etherType != 0x9100 {
+			break
+		}
 		if len(frame) < offset+4 {
 			return p, ErrTooShort
 		}
-		p.VLAN = binary.BigEndian.Uint16(frame[offset:offset+2]) & 0x0fff
+		vid := binary.BigEndian.Uint16(frame[offset:offset+2]) & 0x0fff
+		if tags == 0 {
+			p.VLAN = vid
+		} else {
+			p.InnerVLAN = vid
+		}
 		etherType = binary.BigEndian.Uint16(frame[offset+2 : offset+4])
 		offset += 4
+	}
+
+	// MPLS:标签栈里每项 4 字节,第 3 字节最低位是栈底标志。栈底之后
+	// 直接就是 IP,没有 ethertype —— 所以要靠首字节的版本号自己判断。
+	//
+	// 不处理的话 MPLS 封装的流量和 QinQ 一样被整个丢掉。
+	if etherType == 0x8847 || etherType == 0x8848 {
+		const maxMPLSLabels = 8
+		for i := 0; i < maxMPLSLabels; i++ {
+			if len(frame) < offset+4 {
+				return p, ErrTooShort
+			}
+			bottom := frame[offset+2]&0x01 == 1
+			offset += 4
+			if bottom {
+				break
+			}
+			if i == maxMPLSLabels-1 {
+				return p, ErrNotIPv4 // 标签栈深得不正常,不猜
+			}
+		}
+		if len(frame) <= offset {
+			return p, ErrTooShort
+		}
+		if frame[offset]>>4 != 4 {
+			return p, ErrNotIPv4
+		}
+		etherType = 0x0800
 	}
 
 	if etherType != 0x0800 {
@@ -91,7 +143,8 @@ func ParseEthernet(frame []byte) (Packet, error) {
 		return p, err
 	}
 	// 保留链路层信息,IP 层字段用解析结果覆盖。
-	ipPkt.SrcMAC, ipPkt.DstMAC, ipPkt.VLAN = p.SrcMAC, p.DstMAC, p.VLAN
+	ipPkt.SrcMAC, ipPkt.DstMAC = p.SrcMAC, p.DstMAC
+	ipPkt.VLAN, ipPkt.InnerVLAN = p.VLAN, p.InnerVLAN
 	return ipPkt, nil
 }
 

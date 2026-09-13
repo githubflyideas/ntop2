@@ -193,7 +193,52 @@ ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY ip
 `
 
+// ifCountersDDL 是接口计数器快照表,数据来自 sFlow counter sample。
+//
+// 与 flows 分开是因为它们是两种东西:flows 是抽样估算的明细,这张表是
+// 设备自报的权威累计值,每接口每 20~30 秒一行,行数与流量无关。
+//
+// ReplacingMergeTree 按 (device_id, if_index, timestamp) 去重:设备重传
+// 或者两台 collector 收到同一份 datagram 时,重复行会在 merge 时消掉,
+// 不需要在写入侧做幂等。
+//
+// 存的是累计值不是差值。差值在查询侧用 runningDifference 之类算 ——
+// 采集侧做差要记住上一次的值,进程一重启就会算出一个巨大的尖峰,
+// 而原始累计值任何时候都能重新算。
+const ifCountersDDL = `
+CREATE TABLE IF NOT EXISTS if_counters
+(
+    timestamp       DateTime64(3),
+    device_id       UInt32,
+    if_index        UInt32,
+
+    if_type         UInt32,
+    if_speed        UInt64,
+    if_direction    UInt8,
+    if_status       UInt8,
+
+    in_octets       UInt64,
+    in_ucast_pkts   UInt32,
+    in_mcast_pkts   UInt32,
+    in_bcast_pkts   UInt32,
+    in_discards     UInt32,
+    in_errors       UInt32,
+    in_unknown_pro  UInt32,
+
+    out_octets      UInt64,
+    out_ucast_pkts  UInt32,
+    out_mcast_pkts  UInt32,
+    out_bcast_pkts  UInt32,
+    out_discards    UInt32,
+    out_errors      UInt32
+)
+ENGINE = ReplacingMergeTree
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (device_id, if_index, timestamp)
+TTL toDateTime(timestamp) + INTERVAL 90 DAY
+`
+
 // allDDL 是建表顺序。物化视图必须在两张表都存在之后创建。
 func allDDL() []string {
-	return []string{flowsDDL, flows1mDDL, flows1mMVDDL, ipMetadataDDL}
+	return []string{flowsDDL, flows1mDDL, flows1mMVDDL, ipMetadataDDL, ifCountersDDL}
 }

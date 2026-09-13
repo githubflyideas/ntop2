@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
@@ -30,13 +31,21 @@ import (
 
 // Server 是 HTTP 服务。
 type Server struct {
-	st     *store.Store
-	au     *auth.Auth
-	asn    *enrich.DB
-	mmdb   *enrich.MMDB
-	city   *enrich.CityDB
-	syncer *enrich.Syncer
-	log    *log.Logger
+	// stores 按输入源分库:每种输入一个 *store.Store,各自绑在自己的
+	// ClickHouse 库上。查询时按请求里的 source 选一个。
+	//
+	// 不合成一个 Store 再按 source_type 过滤:三种来源的 packets/bytes
+	// 口径不同,合在一起之后任何一个忘了带过滤条件的聚合都会把它们加起来,
+	// 得到一个不报错但没有意义的数字。分库让这件事在物理上不可能发生。
+	stores map[string]*store.Store
+	// defaultSrc 是请求没指定 source 时用哪个,取第一个启用的输入。
+	defaultSrc string
+	au         *auth.Auth
+	asn        *enrich.DB
+	mmdb       *enrich.MMDB
+	city       *enrich.CityDB
+	syncer     *enrich.Syncer
+	log        *log.Logger
 
 	// queries 是保存查询的持久化(DataDir/queries.json)。
 	queries *queryStore
@@ -66,15 +75,18 @@ type Server struct {
 
 // Config 构造参数。
 type Config struct {
-	Store   *store.Store
-	Auth    *auth.Auth
-	ASN     *enrich.DB
-	MMDB    *enrich.MMDB
-	City    *enrich.CityDB
-	Syncer  *enrich.Syncer
-	Logger  *log.Logger
-	DataDir string
-	Inputs  []string
+	// Stores 按输入源分库,键是 "local" / "sflow" / "netflow"。
+	Stores map[string]*store.Store
+	// DefaultSource 是请求没带 source 时查哪个库。
+	DefaultSource string
+	Auth          *auth.Auth
+	ASN           *enrich.DB
+	MMDB          *enrich.MMDB
+	City          *enrich.CityDB
+	Syncer        *enrich.Syncer
+	Logger        *log.Logger
+	DataDir       string
+	Inputs        []string
 
 	// Version 是编译时塞进 main 的版本号,显示在页脚。
 	Version string
@@ -99,13 +111,13 @@ func New(cfg Config) *Server {
 		lg = log.Default()
 	}
 	return &Server{
-		st: cfg.Store, au: cfg.Auth, asn: cfg.ASN, mmdb: cfg.MMDB,
+		stores: cfg.Stores, defaultSrc: cfg.DefaultSource, au: cfg.Auth, asn: cfg.ASN, mmdb: cfg.MMDB,
 		city: cfg.City, syncer: cfg.Syncer,
 		log: lg, DataDir: cfg.DataDir, Inputs: cfg.Inputs,
 		feed: cfg.Feed, reporters: cfg.Reporters, dns: cfg.DNS,
 		ban:     ban.NewBuilder(cfg.BanProtect),
 		queries: newQueryStore(cfg.DataDir),
-		index:   renderIndex(cfg.Version),
+		index:   renderIndex(cfg.Version, sortedKeys(cfg.Stores)),
 	}
 }
 
@@ -113,11 +125,23 @@ func New(cfg Config) *Server {
 //
 // 版本号是编译时用 -ldflags -X 塞进 main 的,api 包拿不到,只能由调用方
 // 传进来;没传就写 dev —— 直接 go run 起来的时候页脚不该是空的。
-func renderIndex(version string) string {
+func renderIndex(version string, sources []string) string {
 	if version == "" {
 		version = "dev"
 	}
-	return strings.ReplaceAll(indexHTML, "__VERSION__", template.HTMLEscapeString(version))
+	out := strings.ReplaceAll(indexHTML, "__VERSION__", template.HTMLEscapeString(version))
+
+	// 输入源列表以 JSON 塞进页面,而不是让前端再发一次请求:它在进程
+	// 生命周期内不会变,多一个往返只会让首屏多一次闪烁。
+	//
+	// 走 json.Marshal 再 HTML 转义,而不是自己拼字符串:源名虽然目前只
+	// 可能是 local/sflow/netflow 三个常量,但它最终来自命令行,拼进
+	// <script> 的东西一律当不可信处理。
+	b, err := json.Marshal(sources)
+	if err != nil {
+		b = []byte("[]")
+	}
+	return strings.ReplaceAll(out, "__SOURCES__", template.JSEscapeString(string(b)))
 }
 
 // Routes 注册全部路由。
@@ -229,7 +253,12 @@ func (s *Server) handleQuery(w http.ResponseWriter, r *http.Request, user string
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	res, err := s.st.Query(r.Context(), q)
+	st, err := s.storeFor(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	res, err := st.Query(r.Context(), q)
 	if err != nil {
 		// 校验错误的信息是给用户看的(界面直接展示),所以按 400 返回
 		// 而不是笼统的 500 —— 区分"你的查询有问题"与"我这边出错了"。
@@ -253,7 +282,12 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request, user stri
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	stats, err := s.st.Explain(q)
+	st, err := s.storeFor(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	stats, err := st.Explain(q)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -328,13 +362,18 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, user str
 		"inputs": s.Inputs,
 	}
 
-	if st, err := s.st.Stats(r.Context()); err == nil {
-		out["storage"] = map[string]any{
-			"rows":            st.TotalRows,
-			"oldest":          st.Oldest,
-			"newest":          st.Newest,
-			"compressed_gb":   round2(st.CompressedGB),
-			"uncompressed_gb": round2(st.UncompressedGB),
+	// 概览页不该因为 source 写错就整页失败,所以这里用 mustStore 退回默认库。
+	// 但它可能是 nil(测试里构造的 Server 没有 Stores),取不到就跳过
+	// storage 这一段,其余信息照常返回。
+	if ss := s.mustStore(r); ss != nil {
+		if st, err := ss.Stats(r.Context()); err == nil {
+			out["storage"] = map[string]any{
+				"rows":            st.TotalRows,
+				"oldest":          st.Oldest,
+				"newest":          st.Newest,
+				"compressed_gb":   round2(st.CompressedGB),
+				"uncompressed_gb": round2(st.UncompressedGB),
+			}
 		}
 	}
 
@@ -531,4 +570,44 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func round2(f float64) float64 {
 	return float64(int64(f*100+0.5)) / 100
+}
+
+// storeFor 按请求里的 source 选库。
+//
+// source 从查询参数取而不是塞进 Query AST:AST 描述的是"查什么",
+// 选哪个库是"去哪查",两件事。保存下来的查询因此可以在不同输入源之间
+// 复用,不会把当初的来源一起腌进去。
+//
+// 未知的 source 报错而不是悄悄退回默认库 —— 后者会让界面上的来源切换
+// 看起来生效了,而数据其实一直来自同一个地方。
+func (s *Server) storeFor(r *http.Request) (*store.Store, error) {
+	name := r.URL.Query().Get("source")
+	if name == "" {
+		name = s.defaultSrc
+	}
+	st, ok := s.stores[name]
+	if !ok {
+		return nil, fmt.Errorf("未知的输入源 %q(当前启用:%s)", name, strings.Join(s.sourceNames(), ", "))
+	}
+	return st, nil
+}
+
+// mustStore 用于不该因为 source 写错就失败的只读接口(概览)。
+func (s *Server) mustStore(r *http.Request) *store.Store {
+	if st, err := s.storeFor(r); err == nil {
+		return st
+	}
+	return s.stores[s.defaultSrc]
+}
+
+// sourceNames 返回启用的输入源,顺序固定,供界面画来源切换。
+func (s *Server) sourceNames() []string { return sortedKeys(s.stores) }
+
+func sortedKeys(m map[string]*store.Store) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

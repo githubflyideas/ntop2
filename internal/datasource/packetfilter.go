@@ -139,7 +139,7 @@ func packetToObservation(p flow.Packet) Observation {
 	}
 	o.SrcPort, o.DstPort = p.SrcPort, p.DstPort
 	o.Proto, o.Length = p.Protocol, p.Length
-	o.TCPFlags, o.VLAN = p.TCPFlags, p.VLAN
+	o.TCPFlags, o.VLAN, o.InnerVLAN = p.TCPFlags, p.VLAN, p.InnerVLAN
 	return o
 }
 

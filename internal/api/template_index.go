@@ -224,6 +224,7 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
   <div class="err" id="err"></div>
 
   <div class="bar" id="bar">
+    <select id="source" style="display:none" title="输入源。每种输入独占一个 ClickHouse 库,切换即换库查询"></select>
     <select id="range">
       <option value="15m">最近 15 分钟</option>
       <option value="1h" selected>最近 1 小时</option>
@@ -441,7 +442,23 @@ let ENRICH = null;
 
 function showErr(m){const e=$('#err');e.textContent=m||'';e.style.display=m?'block':'none';}
 
+// SOURCES 是启用的输入源,由服务端渲染进来(见 renderIndex)。
+// 每种输入独占一个 ClickHouse 库,所以"看哪一路数据"是选库,不是加过滤条件。
+const SOURCES = JSON.parse("__SOURCES__");
+let SOURCE = SOURCES[0] || '';
+
+// withSource 把当前来源拼进 URL。
+//
+// 放在 api() 这一层而不是每个调用点:七个视图、所有下钻、Explorer 全都
+// 走同一个 api(),漏掉任何一处的表现都是"切了来源但这张卡片没变",
+// 而那种不一致比整页报错更难发现。
+function withSource(path){
+  if(!SOURCE || path.indexOf('/api/v1/')!==0) return path;
+  return path + (path.indexOf('?')>=0 ? '&' : '?') + 'source=' + encodeURIComponent(SOURCE);
+}
+
 async function api(path, body){
+  path = withSource(path);
   // no-store 两头都要写:服务端的响应头是权威的,但页面自己也说一遍,
   // 免得中间放了个不转发这个头的反向代理时又开始拿旧数据。
   const r = await fetch(path, body?{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1718,6 +1735,23 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id==='s-'+b.dataset.t));
   load(b.dataset.t);
 });
+// 输入源切换。只有启用了两种以上输入才显示 —— 单输入部署下这个下拉
+// 永远只有一个选项,摆出来只会让人以为还有别的地方可以选。
+(function initSource(){
+  const el = $('#source');
+  if(!el || SOURCES.length < 2) return;
+  const LABEL = {local:'本机采集', sflow:'sFlow', netflow:'NetFlow'};
+  el.innerHTML = SOURCES.map(s=>'<option value="'+esc(s)+'">'+esc(LABEL[s]||s)+'</option>').join('');
+  el.value = SOURCE;
+  el.style.display = '';
+  el.onchange = ()=>{
+    SOURCE = el.value;
+    // DNS.names 不清:PTR 是地址的属性,跟数据来自哪个库无关,
+    // 清掉只会让同一批地址再问一遍服务端。
+    load(current());
+  };
+})();
+
 $('#refresh').onclick=()=>load(current());
 $('#metric').onchange=()=>load(current());
 $('#ts-dim').onchange=()=>{ if(!refreshRange()) timeseries($('#ts')); };

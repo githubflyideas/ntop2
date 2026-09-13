@@ -90,6 +90,7 @@ var filterableFields = map[string]fieldDef{
 	"input_interface":  {column: "input_interface", kind: kindInt, ops: numOps},
 	"output_interface": {column: "output_interface", kind: kindInt, ops: numOps},
 	"vlan":             {column: "vlan", kind: kindInt, ops: numOps},
+	"inner_vlan":       {column: "inner_vlan", kind: kindInt, ops: numOps},
 	"tcp_flags":        {column: "tcp_flags", kind: kindInt, ops: numOps},
 }
 
@@ -124,6 +125,7 @@ var groupableFields = map[string]string{
 	"input_interface":  "input_interface",
 	"output_interface": "output_interface",
 	"vlan":             "vlan",
+	"inner_vlan":       "inner_vlan",
 }
 
 // metricExprs 指标名 → 聚合表达式。

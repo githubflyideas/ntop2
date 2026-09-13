@@ -31,6 +31,11 @@ const (
 	sflowFlowSample         = 1
 	sflowCounterSample      = 2
 	sflowFlowSampleExpanded = 3
+	sflowCounterSampleExp   = 4
+
+	// counter_record 里通用接口计数器的 format,固定 88 字节。
+	sflowIfCountersFormat = 1
+	sflowIfCountersLen    = 88
 
 	// flow record 的 format 值。
 	sflowRawPacketHeader = 1
@@ -44,9 +49,13 @@ const (
 type SFlowSource struct {
 	conn *net.UDPConn
 	sink Sink
-	log  *log.Logger
+	// counters 可以为 nil —— 存储层不支持接口计数器时照常收 flow,
+	// 只是不写计数器。设为必填会让"只想看流量"的部署也被迫配它。
+	counters CounterSink
+	log      *log.Logger
 
 	batch    []flow.Flow
+	cbatch   []flow.IfCounters
 	batchCap int
 	flushAt  time.Time
 	flushInt time.Duration
@@ -62,6 +71,7 @@ type SFlowSource struct {
 type SFlowConfig struct {
 	Listen        string
 	Sink          Sink
+	Counters      CounterSink
 	Logger        *log.Logger
 	FlushInterval time.Duration
 	BatchSize     int
@@ -96,8 +106,8 @@ func NewSFlowSource(cfg SFlowConfig) (*SFlowSource, error) {
 	_ = conn.SetReadBuffer(8 << 20)
 
 	return &SFlowSource{
-		conn:     conn,
-		sink:     cfg.Sink,
+		conn: conn,
+		sink: cfg.Sink, counters: cfg.Counters,
 		log:      cfg.Logger,
 		batch:    make([]flow.Flow, 0, cfg.BatchSize),
 		batchCap: cfg.BatchSize,
@@ -143,33 +153,48 @@ func (s *SFlowSource) Run(ctx context.Context) error {
 			return fmt.Errorf("collector: sFlow 读取失败: %w", err)
 		}
 
-		flows, err := DecodeSFlowV5(buf[:n], src.IP)
+		flows, counters, err := DecodeSFlowV5Full(buf[:n], src.IP)
 		if err != nil {
 			s.arr.bad(err)
 			s.logOnce(err)
 			continue
 		}
 		s.arr.got(src.IP.String(), len(flows))
+		s.arr.counters(len(counters))
 		s.batch = append(s.batch, flows...)
+		s.cbatch = append(s.cbatch, counters...)
 		s.maybeFlush(ctx)
 	}
 }
 
 func (s *SFlowSource) maybeFlush(ctx context.Context) {
-	if len(s.batch) >= s.batchCap || time.Now().After(s.flushAt) {
+	if len(s.batch) >= s.batchCap || len(s.cbatch) >= s.batchCap || time.Now().After(s.flushAt) {
 		s.flush(ctx)
 	}
 }
 
 func (s *SFlowSource) flush(ctx context.Context) {
 	s.flushAt = time.Now().Add(s.flushInt)
-	if len(s.batch) == 0 {
+	if len(s.batch) == 0 && len(s.cbatch) == 0 {
 		return
 	}
-	if err := s.sink.Append(ctx, s.batch); err != nil {
-		s.log.Printf("[sflow] 写入 %d 条失败: %v", len(s.batch), err)
+	if len(s.batch) > 0 {
+		if err := s.sink.Append(ctx, s.batch); err != nil {
+			s.log.Printf("[sflow] 写入 %d 条失败: %v", len(s.batch), err)
+		}
+		s.batch = s.batch[:0]
 	}
-	s.batch = s.batch[:0]
+
+	// 计数器与 flow 分开写:一边失败不该把另一边一起丢掉。接口计数器
+	// 是校准流量估算的基准,恰恰在写入出问题的时候最需要它还在。
+	if len(s.cbatch) > 0 {
+		if s.counters != nil {
+			if err := s.counters.AppendCounters(ctx, s.cbatch); err != nil {
+				s.log.Printf("[sflow] 写入 %d 条接口计数器失败: %v", len(s.cbatch), err)
+			}
+		}
+		s.cbatch = s.cbatch[:0]
+	}
 }
 
 func (s *SFlowSource) logOnce(err error) {
@@ -225,22 +250,35 @@ func (r *reader) bytes(n int) ([]byte, bool) {
 	return v, true
 }
 
-// DecodeSFlowV5 解码一个 sFlow v5 datagram。
+// DecodeSFlowV5 解码一个 sFlow v5 datagram,只返回 flow。
+//
+// 保留这个签名是为了调用方与测试不必都改成三返回值 —— 大多数地方
+// 只关心 flow。要接口计数器用 DecodeSFlowV5Full。
 func DecodeSFlowV5(pkt []byte, exporter net.IP) ([]flow.Flow, error) {
+	fs, _, err := DecodeSFlowV5Full(pkt, exporter)
+	return fs, err
+}
+
+// DecodeSFlowV5Full 解码一个 sFlow v5 datagram,同时返回 flow sample
+// 与 counter sample。
+//
+// 两种 sample 在同一个 datagram 里交替出现,所以只能一起解 —— 分成两次
+// 遍历要么重复解析,要么要把走位状态传来传去。
+func DecodeSFlowV5Full(pkt []byte, exporter net.IP) ([]flow.Flow, []flow.IfCounters, error) {
 	r := &reader{b: pkt}
 
 	version, ok := r.u32()
 	if !ok {
-		return nil, errors.New("包过短,读不到版本号")
+		return nil, nil, errors.New("包过短,读不到版本号")
 	}
 	if version != sflowV5Version {
-		return nil, fmt.Errorf("版本 %d 不是 sFlow v5", version)
+		return nil, nil, fmt.Errorf("版本 %d 不是 sFlow v5", version)
 	}
 
 	// agent address:1 = IPv4(4 字节),2 = IPv6(16 字节)。
 	agentType, ok := r.u32()
 	if !ok {
-		return nil, errors.New("读不到 agent 地址类型")
+		return nil, nil, errors.New("读不到 agent 地址类型")
 	}
 	agentLen := 4
 	if agentType == 2 {
@@ -248,22 +286,22 @@ func DecodeSFlowV5(pkt []byte, exporter net.IP) ([]flow.Flow, error) {
 	}
 	agentIP, ok := r.bytes(agentLen)
 	if !ok {
-		return nil, errors.New("读不到 agent 地址")
+		return nil, nil, errors.New("读不到 agent 地址")
 	}
 
 	// sub_agent_id, datagram_sequence, uptime
 	if !r.skip(12) {
-		return nil, errors.New("包过短,读不到 datagram 头")
+		return nil, nil, errors.New("包过短,读不到 datagram 头")
 	}
 
 	numSamples, ok := r.u32()
 	if !ok {
-		return nil, errors.New("读不到 sample 数量")
+		return nil, nil, errors.New("读不到 sample 数量")
 	}
 	// 上限防止损坏的长度字段导致一个巨大的循环。一个 datagram 里
 	// 上千个 sample 已经不正常。
 	if numSamples > 1024 {
-		return nil, fmt.Errorf("sample 数量 %d 不合理", numSamples)
+		return nil, nil, fmt.Errorf("sample 数量 %d 不合理", numSamples)
 	}
 
 	// DeviceID 优先用 agent address —— 那是设备自报的身份,比 UDP 源地址
@@ -275,6 +313,7 @@ func DecodeSFlowV5(pkt []byte, exporter net.IP) ([]flow.Flow, error) {
 
 	now := time.Now()
 	var out []flow.Flow
+	var counters []flow.IfCounters
 
 	for i := uint32(0); i < numSamples; i++ {
 		sampleType, ok := r.u32()
@@ -287,7 +326,7 @@ func DecodeSFlowV5(pkt []byte, exporter net.IP) ([]flow.Flow, error) {
 		}
 		body, ok := r.bytes(int(sampleLen))
 		if !ok {
-			return nil, fmt.Errorf("第 %d 个 sample 声明长度 %d 超出剩余数据", i+1, sampleLen)
+			return nil, nil, fmt.Errorf("第 %d 个 sample 声明长度 %d 超出剩余数据", i+1, sampleLen)
 		}
 
 		switch sampleType {
@@ -298,14 +337,128 @@ func DecodeSFlowV5(pkt []byte, exporter net.IP) ([]flow.Flow, error) {
 				continue
 			}
 			out = append(out, fs...)
-		case sflowCounterSample:
-			// Counter sample 是接口计数器快照,技术设计 §4.2 把它列为
-			// 后续版本。跳过而不是报错:设备通常同时发两种,报错会让
-			// 一半的包被记成解码失败。
-			continue
+		case sflowCounterSample, sflowCounterSampleExp:
+			cs, err := decodeCounterSample(body, sampleType == sflowCounterSampleExp, deviceID, now)
+			if err != nil {
+				// 同 flow sample:单个 sample 解不出来不影响同一个
+				// datagram 里的其他 sample。设备通常两种一起发,
+				// 因为一个 counter sample 解不开就把整包记成失败,
+				// 会让"到底有没有收到流量"这个问题彻底看不清。
+				continue
+			}
+			counters = append(counters, cs...)
 		}
 	}
+	return out, counters, nil
+}
+
+// decodeCounterSample 解一个 counter sample,取其中的通用接口计数器。
+//
+// 一个 counter sample 里可以有多条 counter_record(通用计数器、以太网
+// 计数器、厂商私有的等等),这里只认 format 1 的通用接口计数器 ——
+// 它是唯一所有设备都发、而且字段含义有标准定义的那一条。其余原样跳过,
+// 靠 record 自带的长度字段走位,所以将来加解析不影响现在的走位。
+func decodeCounterSample(b []byte, expanded bool, deviceID uint32, now time.Time) ([]flow.IfCounters, error) {
+	r := &reader{b: b}
+
+	// sequence_number
+	if _, ok := r.u32(); !ok {
+		return nil, errors.New("counter sample 过短")
+	}
+	// source_id:标准格式 4 字节,expanded 是 type + index 各 4 字节。
+	skip := 4
+	if expanded {
+		skip = 8
+	}
+	if !r.skip(skip) {
+		return nil, errors.New("counter sample 过短:source_id")
+	}
+
+	numRecords, ok := r.u32()
+	if !ok {
+		return nil, errors.New("读不到 counter record 数量")
+	}
+	if numRecords > 64 {
+		return nil, fmt.Errorf("counter record 数量 %d 不合理", numRecords)
+	}
+
+	var out []flow.IfCounters
+	for i := uint32(0); i < numRecords; i++ {
+		format, ok := r.u32()
+		if !ok {
+			break
+		}
+		length, ok := r.u32()
+		if !ok {
+			break
+		}
+		body, ok := r.bytes(int(length))
+		if !ok {
+			return nil, fmt.Errorf("第 %d 条 counter record 声明长度 %d 超出剩余数据", i+1, length)
+		}
+		if format&0xfff != sflowIfCountersFormat || len(body) < sflowIfCountersLen {
+			continue
+		}
+		c, err := decodeIfCounters(body, deviceID, now)
+		if err != nil {
+			continue
+		}
+		out = append(out, c)
+	}
 	return out, nil
+}
+
+// decodeIfCounters 解 generic interface counters(counter_format = 1)。
+//
+// 字段顺序照 sFlow v5 规范,octets 是 64 位、包计数是 32 位 —— 这个
+// 宽度差别不是笔误,规范就是这么定的。按同一宽度读会让后面所有字段
+// 错位,而且跟 flow sample 那个 bug 一样不会报错。
+func decodeIfCounters(b []byte, deviceID uint32, now time.Time) (flow.IfCounters, error) {
+	r := &reader{b: b}
+	c := flow.IfCounters{Timestamp: now, DeviceID: deviceID}
+
+	u32 := func(dst *uint32) bool {
+		v, ok := r.u32()
+		if ok {
+			*dst = v
+		}
+		return ok
+	}
+	u64 := func(dst *uint64) bool {
+		hi, ok := r.u32()
+		if !ok {
+			return false
+		}
+		lo, ok := r.u32()
+		if !ok {
+			return false
+		}
+		*dst = uint64(hi)<<32 | uint64(lo)
+		return true
+	}
+
+	ok := u32(&c.IfIndex) &&
+		u32(&c.IfType) &&
+		u64(&c.IfSpeed) &&
+		u32(&c.IfDirection) &&
+		u32(&c.IfStatus) &&
+		u64(&c.InOctets) &&
+		u32(&c.InUcastPkts) &&
+		u32(&c.InMcastPkts) &&
+		u32(&c.InBcastPkts) &&
+		u32(&c.InDiscards) &&
+		u32(&c.InErrors) &&
+		u32(&c.InUnknownPro) &&
+		u64(&c.OutOctets) &&
+		u32(&c.OutUcastPkts) &&
+		u32(&c.OutMcastPkts) &&
+		u32(&c.OutBcastPkts) &&
+		u32(&c.OutDiscards) &&
+		u32(&c.OutErrors)
+	if !ok {
+		return c, errors.New("接口计数器字段不完整")
+	}
+	return c, nil
 }
 
 // decodeFlowSample 解一个 flow sample。
@@ -317,60 +470,72 @@ func decodeFlowSample(b []byte, expanded bool, deviceID uint32, now time.Time) (
 		return nil, errors.New("flow sample 过短")
 	}
 
+	// sFlow v5 规范里 flow_sample 与 flow_sample_expanded 的字段顺序不同,
+	// 而且 expanded 不是简单地把每个字段加宽:sampling_rate / sample_pool /
+	// drops 排在 source_id 之后、input/output 之前,标准格式里它们也在
+	// input/output 之前,但 source_id 与 input/output 的宽度都翻了倍。
+	//
+	// 按标准格式的顺序去读 expanded,消耗的总字节数恰好相同(40 字节),
+	// num_records 仍然落在正确位置,解码不报错 —— 错的只是字段归属:
+	// sampling_rate 读到的是 input 的 ifIndex,两个接口读到的是 sample_pool
+	// 与 drops。表现是流量被系统性地缩小几个数量级,而且每台设备缩小的
+	// 倍数还不一样(等于该端口的 ifIndex),完全静默。
+	//
+	// 所以两条分支各自照规范写全,不共用读取顺序。
 	var inputIf, outputIf uint32
+	var samplingRate uint32
+
 	if expanded {
-		// expanded 格式:source_id_type + source_id_index 各 4 字节,
-		// input/output 也各是 8 字节(type + index)。
+		// source_id: type + index,各 4 字节。
 		if !r.skip(8) {
-			return nil, errors.New("expanded sample 过短")
-		}
-		if _, ok := r.u32(); !ok { // input format
-			return nil, errors.New("读不到 input format")
+			return nil, errors.New("expanded sample 过短:source_id")
 		}
 		v, ok := r.u32()
 		if !ok {
+			return nil, errors.New("expanded sample 读不到采样率")
+		}
+		samplingRate = v
+		if !r.skip(8) { // sample_pool, drops
+			return nil, errors.New("expanded sample 过短:sample_pool/drops")
+		}
+		// input / output 各是 (format, value) 两个 4 字节字段。
+		if _, ok = r.u32(); !ok {
+			return nil, errors.New("读不到 input format")
+		}
+		if v, ok = r.u32(); !ok {
 			return nil, errors.New("读不到 input index")
 		}
 		inputIf = v
-		if _, ok := r.u32(); !ok { // output format
+		if _, ok = r.u32(); !ok {
 			return nil, errors.New("读不到 output format")
 		}
-		v, ok = r.u32()
-		if !ok {
+		if v, ok = r.u32(); !ok {
 			return nil, errors.New("读不到 output index")
 		}
 		outputIf = v
 	} else {
-		// 标准格式:source_id 4 字节。
-		if !r.skip(4) {
-			return nil, errors.New("sample 过短")
+		if !r.skip(4) { // source_id
+			return nil, errors.New("sample 过短:source_id")
 		}
-	}
-
-	samplingRate, ok := r.u32()
-	if !ok {
-		return nil, errors.New("读不到采样率")
-	}
-	if samplingRate == 0 {
-		samplingRate = 1
-	}
-
-	// sample_pool, drops
-	if !r.skip(8) {
-		return nil, errors.New("sample 过短")
-	}
-
-	if !expanded {
 		v, ok := r.u32()
 		if !ok {
+			return nil, errors.New("读不到采样率")
+		}
+		samplingRate = v
+		if !r.skip(8) { // sample_pool, drops
+			return nil, errors.New("sample 过短:sample_pool/drops")
+		}
+		if v, ok = r.u32(); !ok {
 			return nil, errors.New("读不到 input interface")
 		}
 		inputIf = v
-		v, ok = r.u32()
-		if !ok {
+		if v, ok = r.u32(); !ok {
 			return nil, errors.New("读不到 output interface")
 		}
 		outputIf = v
+	}
+	if samplingRate == 0 {
+		samplingRate = 1
 	}
 
 	numRecords, ok := r.u32()
@@ -471,7 +636,7 @@ func decodeRawPacketHeader(b []byte) (flow.Flow, error) {
 	f.Protocol = p.Protocol
 	f.TCPFlags = p.TCPFlags
 	f.SrcMAC, f.DstMAC = p.SrcMAC, p.DstMAC
-	f.VLAN = p.VLAN
+	f.VLAN, f.InnerVLAN = p.VLAN, p.InnerVLAN
 
 	// 字节数优先用 sFlow 自报的 frame_length,而不是包解析出的 IP
 	// total length。

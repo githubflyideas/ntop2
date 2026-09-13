@@ -11,7 +11,7 @@ import (
 // 最后一条不是杞人忧天:版本号来自编译时的 -ldflags -X,谁都可以塞任何
 // 东西进去,而它落在 HTML 里。
 func TestRenderIndexFillsVersion(t *testing.T) {
-	out := renderIndex("v9.9.9")
+	out := renderIndex("v9.9.9", nil)
 	if strings.Contains(out, "__VERSION__") {
 		t.Error("占位符没被替换掉")
 	}
@@ -19,11 +19,11 @@ func TestRenderIndexFillsVersion(t *testing.T) {
 		t.Error("页面里找不到版本号")
 	}
 
-	if !strings.Contains(renderIndex(""), ">dev<") {
+	if !strings.Contains(renderIndex("", nil), ">dev<") {
 		t.Error("空版本号应该显示成 dev")
 	}
 
-	bad := renderIndex(`<script>x</script>`)
+	bad := renderIndex(`<script>x</script>`, nil)
 	if strings.Contains(bad, "<script>x</script>") {
 		t.Error("版本号没有转义")
 	}

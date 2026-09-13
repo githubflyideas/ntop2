@@ -446,7 +446,7 @@ func TestDecodeSFlowV5RejectsWrongVersion(t *testing.T) {
 // TestDecodeSFlowV5SkipsCounterSamples Counter sample 是接口计数器快照,
 // 第一阶段不做。跳过而不是报错:设备通常同时发两种,报错会让一半的包
 // 被记成解码失败。
-func TestDecodeSFlowV5SkipsCounterSamples(t *testing.T) {
+func TestDecodeSFlowV5CounterSampleYieldsNoFlows(t *testing.T) {
 	var dg []byte
 	app := func(v uint32) { b := make([]byte, 4); binary.BigEndian.PutUint32(b, v); dg = append(dg, b...) }
 	app(sflowV5Version)
