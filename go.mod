@@ -1,6 +1,10 @@
 module github.com/githubflyideas/ntop2ban
 
-go 1.22.5
+// 版本写两段(1.22)而不是三段(1.22.5):三段格式只有 Go 1.21 以后的
+// 工具链认得,更早的版本会报 "invalid go version: must match format 1.23"
+// 并且拒绝解析整个 go.mod —— 那个错误看起来像格式写错了,实际是读它的
+// 工具链太旧。两段格式所有版本都认,而且语义不变(都是"至少需要 1.22")。
+go 1.22
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.30.0
