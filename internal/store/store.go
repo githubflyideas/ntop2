@@ -138,6 +138,12 @@ func (s *Store) ensureSchema(ctx context.Context) error {
 			return fmt.Errorf("store: 执行 DDL: %w\n--- 语句 ---\n%s", err, stmt)
 		}
 	}
+	// 增量迁移:新增列对已有表是幂等的,首次建表时执行也无害。
+	for _, stmt := range migrateDDL() {
+		if err := s.conn.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("store: 执行迁移 DDL: %w\n--- 语句 ---\n%s", err, stmt)
+		}
+	}
 	return nil
 }
 

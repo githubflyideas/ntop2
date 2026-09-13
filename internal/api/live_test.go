@@ -130,6 +130,29 @@ func TestLiveRowsShapeAndOmissions(t *testing.T) {
 	if r["src_country"] != "CN" {
 		t.Errorf("非空的富化字段丢了:%v", r)
 	}
+	// BGP 字段空时也不应该出现
+	if _, ok := r["as_path"]; ok {
+		t.Error("空的 as_path 不该出现在结果里")
+	}
+}
+
+func TestLiveRowsBGPFields(t *testing.T) {
+	snap := live.Snapshot{Rows: []live.Entry{{Seq: 1, Flow: flow.Flow{
+		SrcIP: "10.0.0.1", DstIP: "1.1.1.1",
+		SourceType:  flow.SourceSFlow,
+		BGPNextHop: "192.168.1.1",
+		ASPath:     "64512 13335",
+	}}}}
+	rows := liveRows(snap)
+	if len(rows) != 1 {
+		t.Fatal(len(rows))
+	}
+	if rows[0]["bgp_next_hop"] != "192.168.1.1" {
+		t.Errorf("bgp_next_hop = %v", rows[0]["bgp_next_hop"])
+	}
+	if rows[0]["as_path"] != "64512 13335" {
+		t.Errorf("as_path = %v", rows[0]["as_path"])
+	}
 }
 
 // 零值时间不能进 JSON:前端会把 0001-01-01 当成一个真实时刻显示出来。

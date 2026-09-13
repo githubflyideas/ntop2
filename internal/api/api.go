@@ -163,6 +163,10 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	// 理由就是"查不到库的时候也要能看见"。
 	mux.HandleFunc("/api/v1/live", s.authed(s.handleLive))
 	mux.HandleFunc("/api/v1/resolve", s.authed(s.handleResolve))
+
+	// 接口带宽与流量对账。
+	mux.HandleFunc("/api/v1/interfaces", s.authed(s.handleInterfaces))
+	mux.HandleFunc("/api/v1/interfaces/series", s.authed(s.handleIfaceSeries))
 	mux.HandleFunc("/api/v1/enrich/mmdb", s.authed(s.handleMMDBUpload))
 	mux.HandleFunc("/api/v1/enrich/sources", s.authed(s.handleEnrichSources))
 	mux.HandleFunc("/api/v1/enrich/sync", s.authed(s.handleEnrichSync))

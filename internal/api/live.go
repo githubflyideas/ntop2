@@ -144,6 +144,8 @@ func liveRows(snap live.Snapshot) []map[string]any {
 		putIf(m, "dst_country", f.DstCountry)
 		putIf(m, "src_org", f.SrcOrg)
 		putIf(m, "dst_org", f.DstOrg)
+		putIf(m, "bgp_next_hop", f.BGPNextHop)
+		putIf(m, "as_path", f.ASPath)
 		rows = append(rows, m)
 	}
 	return rows

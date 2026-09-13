@@ -84,6 +84,9 @@ var filterableFields = map[string]fieldDef{
 	"application": {column: "application", kind: kindString, ops: stringOps},
 	"source_type": {column: "source_type", kind: kindString, ops: stringOps},
 
+	"bgp_next_hop": {column: "bgp_next_hop", kind: kindString, ops: stringOps},
+	"as_path":      {column: "as_path", kind: kindString, ops: stringOps},
+
 	"device_id":        {column: "device_id", kind: kindInt, ops: numOps},
 	"sensor_id":        {column: "sensor_id", kind: kindInt, ops: numOps},
 	"site_id":          {column: "site_id", kind: kindInt, ops: numOps},
@@ -118,6 +121,9 @@ var groupableFields = map[string]string{
 
 	"application": "application",
 	"source_type": "source_type",
+
+	"bgp_next_hop": "bgp_next_hop",
+	"as_path":      "as_path",
 
 	"device_id":        "device_id",
 	"sensor_id":        "sensor_id",

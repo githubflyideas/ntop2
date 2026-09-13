@@ -189,6 +189,7 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
   <button data-t="conv">Conversations</button>
   <button data-t="geo">ASN / Country</button>
   <button data-t="explore">Explorer</button>
+  <button data-t="ifaces">接口</button>
   <button data-t="live">实时</button>
   <button data-t="settings">设置</button>
 </nav>
@@ -337,6 +338,42 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
         下次加载看的是加载那一刻的最新数据(选了自定义区间的除外)</p>
       <div id="e-sql"></div>
       <div id="e-out" style="margin-top:12px"></div>
+    </div>
+  </section>
+
+  <section id="s-ifaces">
+    <div class="bar" id="if-bar">
+      <label class="lb">设备</label>
+      <select id="if-device"></select>
+      <label class="lb">接口</label>
+      <select id="if-iface"></select>
+      <label class="lb">时间范围</label>
+      <select id="if-range">
+        <option value="1h" selected>最近 1 小时</option>
+        <option value="3h">最近 3 小时</option>
+        <option value="6h">最近 6 小时</option>
+        <option value="24h">最近 24 小时</option>
+        <option value="7d">最近 7 天</option>
+      </select>
+      <button class="act" id="if-go">查询</button>
+    </div>
+    <div class="grid g2" style="margin-top:0">
+      <div class="panel wide">
+        <h2>带宽利用率</h2>
+        <p class="hint" id="if-bw-hint">入向 / 出向 bits/s。接口速率未知时不显示利用率百分比</p>
+        <div id="if-bw" class="ec tall"></div>
+      </div>
+      <div class="panel wide" id="if-acc-wrap" style="display:none">
+        <h2>流量对账</h2>
+        <p class="hint">if_counters 权威值 vs. flow 样本估算值。比值接近 1.0 说明采样率设置正确</p>
+        <div id="if-acc" class="ec tall"></div>
+        <div id="if-acc-tbl" style="margin-top:12px"></div>
+      </div>
+      <div class="panel" id="if-err-wrap" style="display:none">
+        <h2>丢包 / 错包</h2>
+        <p class="hint">in_discards 与 in_errors 的每分钟增量</p>
+        <div id="if-err-ec" class="ec"></div>
+      </div>
     </div>
   </section>
 
@@ -1348,6 +1385,11 @@ function cellText(col, v){
   if(col==='bytes'||col==='observed_bytes') return fmtBytes(v);
   if(col==='packets'||col==='observed_packets'||col==='flows'
      ||col.indexOf('uniq')===0||col.indexOf('duration')===0) return fmtNum(v);
+  // as_path 格式: "64512 65001 13335" — 加 title 便于 hover 看完整路径
+  if(col==='as_path' && v && v!==''){
+    const asnLinks = v.split(' ').map(asn=>'<span class="tag">AS'+esc(asn)+'</span>').join(' ');
+    return '<span title="'+esc(v)+'">'+asnLinks+'</span>';
+  }
   return esc(v===null||v===undefined||v===''?'—':v);
 }
 function cellClass(col){
@@ -1786,11 +1828,14 @@ function renderLiveRows(){
   }
   let h = '<table class="lv"><thead><tr><th>时刻</th><th>源</th><th>目的</th>'
         + '<th>协议</th><th class="num">字节</th><th class="num">包</th>'
-        + '<th>应用</th><th>来源</th></tr></thead><tbody>';
+        + '<th>应用</th><th>AS 路径</th><th>来源</th></tr></thead><tbody>';
   for(const r of LIVE.rows){
     // 抽样倍率要标出来:1/1024 抽样下的 60KB 其实代表 60MB,不写清楚
     // 会让人拿这个数去跟别处的实测值对账,然后以为差了三个数量级。
     const samp = Number(r.sampling)||1;
+    const asCell = r.as_path
+      ? '<td class="tm" title="'+esc(r.bgp_next_hop||'')+'">'+esc(r.as_path)+'</td>'
+      : '<td class="tm dim">—</td>';
     h += '<tr'+(r._new?' class="fresh"':'')+'>'
        + '<td class="tm">'+clock(r.start)+'</td>'
        + '<td>'+endpoint(r.src_ip, r.src_port, r.src_country)+'</td>'
@@ -1799,6 +1844,7 @@ function renderLiveRows(){
        + '<td class="num">'+fmtBytes(r.bytes)+(samp>1?' <span class="tag">×'+samp+'</span>':'')+'</td>'
        + '<td class="num">'+fmtNum(r.packets)+'</td>'
        + '<td>'+esc(r.app||'—')+'</td>'
+       + asCell
        + '<td class="tm">'+esc(sourceName(r.source))+'</td></tr>';
   }
   el.innerHTML = h + '</tbody></table>';
@@ -1823,6 +1869,244 @@ async function annotateLiveNames(){
   });
 }
 
+// --- 接口带宽页 ---
+
+let IF_DATA = null;  // 上次查询结果,供图 resize 时重画
+
+async function loadIfaceList(){
+  const d = await api('/api/v1/interfaces');
+  if(!d) return [];
+  return d.interfaces || [];
+}
+
+function ifRangeSec(){
+  const v = $('#if-range').value;
+  const n=parseInt(v), u=v.slice(-1);
+  return u==='h' ? n*3600 : n*86400;
+}
+
+async function loadIfaces(){
+  // 第一次进来先填设备 / 接口选择器
+  if(!$('#if-device').dataset.loaded){
+    try {
+      const ifaces = await loadIfaceList();
+      // 按 device_id 分组
+      const devMap = new Map();
+      ifaces.forEach(m=>{
+        const k = String(m.device_id);
+        if(!devMap.has(k)) devMap.set(k, []);
+        devMap.get(k).push(m);
+      });
+      const dSel = $('#if-device');
+      dSel.innerHTML = '';
+      if(devMap.size === 0){
+        dSel.innerHTML = '<option value="">— 暂无数据 —</option>';
+      } else {
+        devMap.forEach((_, did)=>{
+          const o = document.createElement('option');
+          o.value = did;
+          o.textContent = '设备 ' + did;
+          dSel.appendChild(o);
+        });
+      }
+      dSel.dataset.loaded = '1';
+      dSel.dataset.ifaceMap = JSON.stringify(Object.fromEntries(devMap));
+      fillIfaceSelector(dSel.value);
+
+      dSel.onchange = ()=>fillIfaceSelector(dSel.value);
+    } catch(e){ showErr(e.message); return; }
+  }
+  await queryIfaceSeries();
+}
+
+function fillIfaceSelector(did){
+  const raw = $('#if-device').dataset.ifaceMap;
+  if(!raw) return;
+  const all = JSON.parse(raw);
+  const list = all[did] || [];
+  const sel = $('#if-iface');
+  sel.innerHTML = '';
+  list.forEach(m=>{
+    const o = document.createElement('option');
+    o.value = String(m.if_index);
+    const speedStr = m.if_speed ? fmtBps(m.if_speed) : '速率未知';
+    o.textContent = '接口 ' + m.if_index + ' (' + speedStr + ')';
+    sel.appendChild(o);
+  });
+}
+
+async function queryIfaceSeries(){
+  const did = $('#if-device').value;
+  const iidx = $('#if-iface').value;
+  if(!did || !iidx){ return; }
+
+  const rangeSec = ifRangeSec();
+  const now = Math.floor(Date.now()/1000);
+  const from = now - rangeSec;
+  const step = rangeSec <= 3600 ? 60 : rangeSec <= 86400 ? 300 : 1800;
+
+  let d;
+  try {
+    d = await api('/api/v1/interfaces/series?device_id='+did+'&if_index='+iidx
+      +'&from='+from+'&to='+now+'&step='+step);
+  } catch(e){ showErr(e.message); return; }
+  if(!d) return;
+  IF_DATA = d;
+
+  renderIfBw(d);
+  renderIfAccount(d);
+  renderIfErrors(d);
+}
+
+$('#if-go').onclick = ()=>queryIfaceSeries();
+
+function renderIfBw(d){
+  const pts = d.bandwidth || [];
+  const el = $('#if-bw');
+  if(!pts.length){ showEmpty(el,'暂无数据'); return; }
+
+  const speed = d.if_speed;
+  const times = pts.map(p=>new Date(p.ts*1000).toLocaleTimeString());
+  const inBps  = pts.map(p=>p.in_bps  < 0 ? null : p.in_bps);
+  const outBps = pts.map(p=>p.out_bps < 0 ? null : p.out_bps);
+
+  const hint = document.getElementById('if-bw-hint');
+  if(speed > 0){
+    hint.textContent = '接口速率 ' + fmtBps(speed) + '。入向 / 出向 bits/s 与利用率';
+  } else {
+    hint.textContent = '接口速率未知,仅显示 bits/s(无法计算利用率)';
+  }
+
+  const opt = {
+    tooltip:{trigger:'axis', formatter(ps){
+      return ps.map(p=>p.seriesName+': '+(p.value==null?'—':fmtBps(p.value))).join('<br>');
+    }},
+    legend:{data:['入向','出向'],textStyle:{color:'#8b95a3'}},
+    grid:{left:64,right:20,top:36,bottom:48},
+    xAxis:{type:'category',data:times,axisLabel:{color:'#8b95a3',fontSize:12}},
+    yAxis:{type:'value',axisLabel:{color:'#8b95a3',fontSize:12,
+      formatter:v=>fmtBps(v)},splitLine:{lineStyle:{color:'#232c3b'}}},
+    dataZoom:[{type:'slider',bottom:4,height:20,fillerColor:'rgba(61,126,255,.2)',
+      borderColor:'#232c3b',handleStyle:{color:'#3d7eff'},textStyle:{color:'#8b95a3'}}],
+    series:[
+      {name:'入向',type:'line',data:inBps,smooth:true,
+       areaStyle:{color:'rgba(61,126,255,.14)'},
+       lineStyle:{color:'#3d7eff'},symbol:'none'},
+      {name:'出向',type:'line',data:outBps,smooth:true,
+       areaStyle:{color:'rgba(0,194,215,.10)'},
+       lineStyle:{color:'#00c2d7'},symbol:'none'},
+    ]
+  };
+
+  // 有利用率时加右轴
+  const hasUtil = speed > 0 && pts.some(p=>p.in_util>=0);
+  if(hasUtil){
+    opt.yAxis = [opt.yAxis, {
+      type:'value', min:0, max:100, position:'right',
+      axisLabel:{color:'#8b95a3',fontSize:12,formatter:v=>v+'%'},
+      splitLine:{show:false}
+    }];
+    const inUtil  = pts.map(p=>p.in_util  < 0 ? null : p.in_util);
+    const outUtil = pts.map(p=>p.out_util < 0 ? null : p.out_util);
+    opt.legend.data.push('入向利用率','出向利用率');
+    opt.series.push(
+      {name:'入向利用率',type:'line',yAxisIndex:1,data:inUtil,smooth:true,
+       lineStyle:{color:'#2fbf71',type:'dashed'},symbol:'none'},
+      {name:'出向利用率',type:'line',yAxisIndex:1,data:outUtil,smooth:true,
+       lineStyle:{color:'#e8a33d',type:'dashed'},symbol:'none'}
+    );
+  }
+
+  let ch = echarts.getInstanceByDom(el);
+  if(!ch){ ch = echarts.init(el, 'dark', {backgroundColor:'transparent'}); EC.push(ch); }
+  ch.setOption(opt, true);
+}
+
+function renderIfAccount(d){
+  const pts = d.account || [];
+  const wrap = $('#if-acc-wrap');
+  if(!pts.length){ wrap.style.display='none'; return; }
+  wrap.style.display='';
+
+  const el = $('#if-acc');
+  const times = pts.map(p=>new Date(p.ts*1000).toLocaleTimeString());
+  const cBps   = pts.map(p=>p.counter_bps);
+  const fBps   = pts.map(p=>p.flow_bps);
+  const ratios = pts.map(p=>+(p.ratio).toFixed(3));
+
+  const opt = {
+    tooltip:{trigger:'axis'},
+    legend:{data:['Counter(权威)','Flow(估算)','比值'],textStyle:{color:'#8b95a3'}},
+    grid:{left:64,right:60,top:36,bottom:32},
+    xAxis:{type:'category',data:times,axisLabel:{color:'#8b95a3',fontSize:12}},
+    yAxis:[
+      {type:'value',axisLabel:{color:'#8b95a3',fontSize:12,formatter:v=>fmtBps(v)},
+       splitLine:{lineStyle:{color:'#232c3b'}}},
+      {type:'value',name:'比值',position:'right',min:0,max:2,
+       axisLabel:{color:'#8b95a3',fontSize:12,formatter:v=>v.toFixed(1)},
+       splitLine:{show:false}}
+    ],
+    series:[
+      {name:'Counter(权威)',type:'bar',data:cBps,
+       itemStyle:{color:'rgba(61,126,255,.7)'}},
+      {name:'Flow(估算)',type:'bar',data:fBps,
+       itemStyle:{color:'rgba(0,194,215,.6)'}},
+      {name:'比值',type:'line',yAxisIndex:1,data:ratios,smooth:true,
+       lineStyle:{color:'#e8a33d'},symbol:'circle',symbolSize:4},
+    ]
+  };
+  let ch = echarts.getInstanceByDom(el);
+  if(!ch){ ch = echarts.init(el, 'dark', {backgroundColor:'transparent'}); EC.push(ch); }
+  ch.setOption(opt, true);
+
+  // 摘要表
+  const avg = ratios.reduce((a,b)=>a+b,0)/ratios.length;
+  const min = Math.min(...ratios), max = Math.max(...ratios);
+  $('#if-acc-tbl').innerHTML = '<table><tr><th>统计</th><th>比值(flow/counter)</th></tr>'
+    + '<tr><td>平均</td><td class="num">' + avg.toFixed(3) + '</td></tr>'
+    + '<tr><td>最小</td><td class="num">' + min.toFixed(3) + '</td></tr>'
+    + '<tr><td>最大</td><td class="num">' + max.toFixed(3) + '</td></tr>'
+    + '</table>';
+}
+
+function renderIfErrors(d){
+  const pts = d.bandwidth || [];
+  const wrap = $('#if-err-wrap');
+  const hasErr = pts.some(p=>(p.in_discards||0)>0 || (p.in_errors||0)>0);
+  if(!hasErr){ wrap.style.display='none'; return; }
+  wrap.style.display='';
+
+  const el = $('#if-err-ec');
+  const times = pts.map(p=>new Date(p.ts*1000).toLocaleTimeString());
+  const discs  = pts.map(p=>p.in_discards||0);
+  const errors = pts.map(p=>p.in_errors||0);
+  const opt = {
+    tooltip:{trigger:'axis'},
+    legend:{data:['丢包(in_discards)','错包(in_errors)'],textStyle:{color:'#8b95a3'}},
+    grid:{left:52,right:20,top:36,bottom:32},
+    xAxis:{type:'category',data:times,axisLabel:{color:'#8b95a3',fontSize:12}},
+    yAxis:{type:'value',axisLabel:{color:'#8b95a3',fontSize:12},
+           splitLine:{lineStyle:{color:'#232c3b'}}},
+    series:[
+      {name:'丢包(in_discards)',type:'bar',stack:'err',data:discs,
+       itemStyle:{color:'#e8a33d'}},
+      {name:'错包(in_errors)',type:'bar',stack:'err',data:errors,
+       itemStyle:{color:'#e5534b'}},
+    ]
+  };
+  let ch = echarts.getInstanceByDom(el);
+  if(!ch){ ch = echarts.init(el, 'dark', {backgroundColor:'transparent'}); EC.push(ch); }
+  ch.setOption(opt, true);
+}
+
+function fmtBps(v){
+  if(v==null) return '—';
+  if(v>=1e9) return (v/1e9).toFixed(2)+' Gbps';
+  if(v>=1e6) return (v/1e6).toFixed(2)+' Mbps';
+  if(v>=1e3) return (v/1e3).toFixed(2)+' Kbps';
+  return v.toFixed(0)+' bps';
+}
+
 function current(){ return document.querySelector('nav button.on').dataset.t; }
 
 // chrome 控制全局工具条的可见性。
@@ -1834,7 +2118,7 @@ function current(){ return document.querySelector('nav button.on').dataset.t; }
 function chrome(tab){
   // 实时页和设置页一样不吃时间范围:它显示的是内存里刚到的那几百条,
   // 把"最近 1 小时"留在上面只会让人以为改了会有反应。
-  const bare = tab==='settings' || tab==='live';
+  const bare = tab==='settings' || tab==='live' || tab==='ifaces';
   $('#bar').style.display = bare ? 'none' : 'flex';
   $('#pills').style.display = (bare || !GLOBAL.length) ? 'none' : 'flex';
 }
@@ -1843,12 +2127,12 @@ function load(tab){
   chrome(tab);
   // 设置页不看时间范围,自定义区间填错了也不该在这里拦人 —— 用户切过来
   // 很可能就是为了先去改别的东西。
-  if(tab!=='settings' && tab!=='live'){
+  if(tab!=='settings' && tab!=='live' && tab!=='ifaces'){
     const err = refreshRange();
     if(err){ showErr(err); return; }
   }
   const f={dash:loadDash,hosts:loadHosts,conv:loadConv,geo:loadGeo,
-           explore:()=>{}, live:loadLive,
+           explore:()=>{}, ifaces:loadIfaces, live:loadLive,
            settings:async()=>{
              const r = await Promise.allSettled([loadOverview(), loadSources()]);
              const bad = r.find(x=>x.status==='rejected');

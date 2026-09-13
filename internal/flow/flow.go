@@ -80,6 +80,17 @@ type Flow struct {
 	// "按已知端口推断的应用",不是"确认的应用"。
 	Application string
 
+	// BGP 扩展字段,来自 sFlow extended_gateway record (format 1003)。
+	//
+	// BGPNextHop 是下一跳 IP(字符串形式,与 SrcIP/DstIP 一致)。
+	// ASPath 是空格分隔的 AS 号列表,例如 "64512 65001 13335"。
+	// 用字符串而非 []uint32:ClickHouse 的 Array(UInt32) 聚合与过滤
+	// 均可用,但存字符串可以用 like / hasToken 做前缀/包含查询(
+	// "经过 AS 13335 的流量"),这比 has(as_path_array, 13335) 更灵活。
+	// 两种格式都能互转,存字符串不损失信息。
+	BGPNextHop string
+	ASPath     string
+
 	// 富化快照。写入时打上,不在查询时 JOIN——技术设计 §34.5 明确禁止
 	// 让亿级 flow 实时 JOIN GeoIP 表。代价是 GeoIP 库更新后历史数据
 	// 保持当时的快照,这是想要的行为(§8.1):历史应该反映当时的归属。

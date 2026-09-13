@@ -183,6 +183,7 @@ func compileDetail(q Query, table, tsCol string) (Compiled, error) {
 		"tcp_flags", "application", "src_country", "dst_country",
 		"src_asn", "dst_asn", "src_org", "dst_org",
 		"source_type", "device_id", "input_interface", "vlan", "duration_ms",
+		"bgp_next_hop", "as_path",
 	}
 	sel := `SELECT
     toUnixTimestamp(timestamp) AS ts,
@@ -193,7 +194,8 @@ func compileDetail(q Query, table, tsCol string) (Compiled, error) {
     bytes, packets, observed_bytes, observed_packets, sampling_rate,
     tcp_flags, application, src_country, dst_country,
     src_asn, dst_asn, src_org, dst_org,
-    source_type, device_id, input_interface, vlan, duration_ms
+    source_type, device_id, input_interface, vlan, duration_ms,
+    bgp_next_hop, as_path
 FROM flows AS t
 WHERE t.timestamp >= ? AND t.timestamp < ?`
 

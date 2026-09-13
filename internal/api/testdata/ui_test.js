@@ -138,4 +138,13 @@ t('cellText 明细列该换成人看的形式',()=>{
   assert.strictEqual(cellClass('src_ip'),'mono');
 });
 
+t('cellText as_path 渲染成芯片形式',()=>{
+  const out=cellText('as_path','64512 13335');
+  assert.ok(out.includes('AS64512'), '每个 AS 号加前缀');
+  assert.ok(out.includes('AS13335'));
+  assert.ok(out.includes('title='), '全路径放 title 里 hover 时看');
+  assert.ok(!out.includes('undefined'), '不能有 undefined 字符串');
+  assert.strictEqual(cellText('as_path',''), '—', '空路径显示破折号');
+});
+
 console.log(n+' 项通过');

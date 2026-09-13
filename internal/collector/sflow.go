@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/githubflyideas/ntop2ban/internal/flow"
@@ -38,7 +39,8 @@ const (
 	sflowIfCountersLen    = 88
 
 	// flow record 的 format 值。
-	sflowRawPacketHeader = 1
+	sflowRawPacketHeader   = 1
+	sflowExtendedGateway   = 1003 // extended_gateway:BGP 下一跳 + AS 路径
 
 	// header_protocol 的枚举值。
 	sflowHeaderEthernet = 1
@@ -547,6 +549,9 @@ func decodeFlowSample(b []byte, expanded bool, deviceID uint32, now time.Time) (
 	}
 
 	var out []flow.Flow
+	// bgpNextHop / asPath 来自 extended_gateway record,一个 sample 里至多
+	// 一条。先把它们收集下来,再和同一 sample 里的 raw packet header 合并。
+	var bgpNextHop, asPath string
 	for i := uint32(0); i < numRecords; i++ {
 		format, ok := r.u32()
 		if !ok {
@@ -561,31 +566,33 @@ func decodeFlowSample(b []byte, expanded bool, deviceID uint32, now time.Time) (
 			return out, fmt.Errorf("record %d 声明长度 %d 超出剩余数据", i+1, recLen)
 		}
 
-		// format 的低 12 位是 record type,高 20 位是企业号(0 = 标准)。
-		if format&0xfff != sflowRawPacketHeader {
-			// 扩展记录(extended_switch/router/gateway 等)当前不用。
-			continue
+		switch format & 0xfff {
+		case sflowRawPacketHeader:
+			f, err := decodeRawPacketHeader(rec)
+			if err != nil {
+				continue
+			}
+			f.SamplingRate = samplingRate
+			f.SourceType = flow.SourceSFlow
+			f.DeviceID = deviceID
+			f.InputInterface = inputIf
+			f.OutputInterface = outputIf
+			f.Start, f.End = now, now
+			f.Packets = 1
+			f.ApplySampling()
+			out = append(out, f)
+		case sflowExtendedGateway:
+			bgpNextHop, asPath = decodeExtendedGateway(rec)
 		}
-
-		f, err := decodeRawPacketHeader(rec)
-		if err != nil {
-			continue
+	}
+	// 把 BGP 字段回填到同一 sample 里解出的所有 flow。
+	// 一个 sample 通常只有一个 raw packet header,但规范不禁止多条,
+	// 所以用 range 而不是假设只有 out[0]。
+	if bgpNextHop != "" || asPath != "" {
+		for i := range out {
+			out[i].BGPNextHop = bgpNextHop
+			out[i].ASPath = asPath
 		}
-		f.SamplingRate = samplingRate
-		f.SourceType = flow.SourceSFlow
-		f.DeviceID = deviceID
-		f.InputInterface = inputIf
-		f.OutputInterface = outputIf
-		// sFlow 不带 flow 的起止时间,只有采样时刻。用收包时刻作为
-		// 两端 —— 这是单个包的采样,持续时间本来就是 0。
-		f.Start, f.End = now, now
-
-		// 一个采样包代表 samplingRate 个包。ApplySampling 把实测的
-		// 1 个包/N 字节还原成估算值,同时保留实测值。
-		f.Packets = 1
-		f.ApplySampling()
-
-		out = append(out, f)
 	}
 	return out, nil
 }
@@ -652,4 +659,94 @@ func decodeRawPacketHeader(b []byte) (flow.Flow, error) {
 		f.Bytes = uint64(p.Length)
 	}
 	return f, nil
+}
+
+// decodeExtendedGateway 解 extended_gateway record (format 1003)。
+//
+// sFlow 规范 §5.3.3 定义的 extended_gateway 结构:
+//
+//	next_hop:      IPv4 or IPv6 地址(带类型前缀)
+//	as:            本地 AS(uint32)
+//	src_as:        源 AS(uint32)
+//	src_peer_as:   对等 AS(uint32)
+//	dst_as_path_segments: AS 路径段数组(uint32 count + 每段 type/len/AS列表)
+//	communities:   BGP communities(可选,uint32 数组)
+//	local_pref:    uint32
+//
+// 这里只取 next_hop 和 as_path_segments,其余字段对当前需求没有用处
+// (communities 以后按需加)。
+//
+// 解析失败返回空字符串而不是 error:这是附加信息,解不出来不影响
+// 已经从 raw packet header 里拿到的五元组。
+func decodeExtendedGateway(b []byte) (nextHop, asPath string) {
+	r := &reader{b: b}
+
+	// next_hop: address_type(uint32) + address bytes
+	addrType, ok := r.u32()
+	if !ok {
+		return
+	}
+	var nhLen int
+	switch addrType {
+	case 1:
+		nhLen = 4 // IPv4
+	case 2:
+		nhLen = 16 // IPv6
+	default:
+		return // 未知地址类型
+	}
+	nhBytes, ok := r.bytes(nhLen)
+	if !ok {
+		return
+	}
+	nhIP := net.IP(make([]byte, nhLen))
+	copy(nhIP, nhBytes)
+	if nhLen == 4 {
+		nhIP = nhIP.To16()
+	}
+	nextHop = nhIP.String()
+	// net.IP.String() 对 IPv4-mapped 地址返回点分十进制(例如 "192.168.1.254"),
+	// 不需要额外处理。
+
+	// as, src_as, src_peer_as(各 uint32)
+	if !r.skip(12) {
+		return
+	}
+
+	// dst_as_path_segments: count
+	segCount, ok := r.u32()
+	if !ok {
+		return
+	}
+	if segCount > 64 {
+		return // 不合理
+	}
+
+	var parts []string
+	for i := uint32(0); i < segCount; i++ {
+		// segment: type(uint32) + length(uint32) + AS numbers
+		_, ok := r.u32() // type: 1=AS_SET 2=AS_SEQUENCE
+		if !ok {
+			break
+		}
+		segLen, ok := r.u32()
+		if !ok {
+			break
+		}
+		if segLen > 256 {
+			break
+		}
+		for j := uint32(0); j < segLen; j++ {
+			asn, ok := r.u32()
+			if !ok {
+				break
+			}
+			parts = append(parts, fmt.Sprintf("%d", asn))
+		}
+	}
+
+	if len(parts) > 0 {
+		asPath = strings.Join(parts, " ")
+	}
+	return
 }

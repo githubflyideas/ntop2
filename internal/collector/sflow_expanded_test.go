@@ -397,3 +397,79 @@ func TestCounterOnlyDeviceStillCounted(t *testing.T) {
 		t.Errorf("期望 1 条计数器,得到 %d", len(cs))
 	}
 }
+
+// extendedGatewayRecord 造一个 extended_gateway record (format 1003)。
+//
+// 结构:next_hop(addrType + addr) + as + src_as + src_peer_as +
+//        dst_as_path_segments(count + [type + segLen + AS...])
+func extendedGatewayRecord(nextHopIPv4 []byte, asnPath []uint32) []byte {
+	// next_hop
+	nhPart := cat(u32b(1), nextHopIPv4) // address_type=1(IPv4) + 4 bytes
+	// as, src_as, src_peer_as
+	asPart := cat(u32b(65001), u32b(65001), u32b(65002))
+	// dst_as_path_segments: 1 segment of type AS_SEQUENCE (2), length len(asnPath)
+	segs := cat(u32b(1)) // segment count = 1
+	var asns []byte
+	for _, asn := range asnPath {
+		asns = append(asns, u32b(asn)...)
+	}
+	seg := cat(u32b(2), u32b(uint32(len(asnPath))), asns)
+	segs = append(segs, seg...)
+	// communities(0) + local_pref
+	tail := cat(u32b(0), u32b(100))
+	body := cat(nhPart, asPart, segs, tail)
+	return cat(u32b(1003), u32b(uint32(len(body))), body)
+}
+
+// stdFlowSampleWithGateway 造一个包含 raw_packet + extended_gateway 的 flow_sample。
+func stdFlowSampleWithGateway(rate, inIf, outIf uint32, nh []byte, path []uint32) []byte {
+	gwRec := extendedGatewayRecord(nh, path)
+	body := cat(
+		u32b(9), u32b(0),
+		u32b(rate), u32b(1000), u32b(0),
+		u32b(inIf), u32b(outIf),
+		u32b(2), // num_records = 2
+		rawPacketHeaderRecord(1500),
+		gwRec,
+	)
+	return cat(u32b(1), u32b(uint32(len(body))), body)
+}
+
+// TestExtendedGatewayDecoding 验证 extended_gateway record 里的 BGP 字段
+// 被正确回填到同一 sample 的 flow 上。
+func TestExtendedGatewayDecoding(t *testing.T) {
+	nh := []byte{192, 168, 1, 254}
+	path := []uint32{64512, 65001, 13335}
+	pkt := datagram(stdFlowSampleWithGateway(1000, 11, 22, nh, path))
+	fs, err := DecodeSFlowV5(pkt, net.IPv4(10, 0, 0, 1))
+	if err != nil {
+		t.Fatalf("解码失败: %v", err)
+	}
+	if len(fs) != 1 {
+		t.Fatalf("期望 1 条 flow,得到 %d", len(fs))
+	}
+	f := fs[0]
+
+	if f.BGPNextHop != "192.168.1.254" {
+		t.Errorf("BGPNextHop = %q,应为 192.168.1.254", f.BGPNextHop)
+	}
+	if f.ASPath != "64512 65001 13335" {
+		t.Errorf("ASPath = %q,应为 64512 65001 13335", f.ASPath)
+	}
+}
+
+// TestNoExtendedGateway 验证没有 extended_gateway record 时 BGP 字段为空。
+func TestNoExtendedGateway(t *testing.T) {
+	pkt := datagram(stdFlowSample(1000, 1, 0, 11, 22))
+	fs, err := DecodeSFlowV5(pkt, net.IPv4(10, 0, 0, 1))
+	if err != nil {
+		t.Fatalf("解码失败: %v", err)
+	}
+	if len(fs) != 1 {
+		t.Fatalf("期望 1 条 flow,得到 %d", len(fs))
+	}
+	if fs[0].BGPNextHop != "" || fs[0].ASPath != "" {
+		t.Errorf("没有 gateway record 时 BGP 字段应为空:nexthop=%q path=%q",
+			fs[0].BGPNextHop, fs[0].ASPath)
+	}
+}

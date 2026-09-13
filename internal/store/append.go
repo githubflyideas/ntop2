@@ -62,6 +62,8 @@ func (s *Store) Append(ctx context.Context, batch []flow.Flow) error {
 			f.DstASN,
 			f.SrcOrg,
 			f.DstOrg,
+			f.BGPNextHop,
+			f.ASPath,
 		); err != nil {
 			return fmt.Errorf("store: append row: %w", err)
 		}

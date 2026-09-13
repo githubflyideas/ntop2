@@ -320,7 +320,7 @@ db-ip 定位到山东济南 —— 保留 ASN 库的 country 会产出
 
 ## 界面
 
-七个视图:
+八个视图:
 
 | 视图 | 内容 |
 |---|---|
@@ -330,6 +330,7 @@ db-ip 定位到山东济南 —— 保留 ASN 库的 country 会产出
 | **Conversations** | 源 ↔ 目的 的流量对,两端都可点击下钻 |
 | **ASN / Country** | 源/目的国家、ASN、组织、城市(需 GeoLite2) |
 | **Geo Map** | 世界地图按国家着色(源/目的 × 流量/包/流),点国家下钻 |
+| **接口** | 网络接口带宽时序图(来自 sFlow counter sample),可选时间范围与步长;同时展示 flow 估算值与 counter 权威值的对账比例 |
 | **Explorer** | 查询构造器:选字段、运算符、值,提交 AST;可查看生成的 SQL;查询条件可保存复用 |
 
 所有数据都走 `POST /api/v1/query` 提交 Query AST,每个卡片、每次下钻
@@ -496,7 +497,8 @@ af-packet(macOS 上是 bpf-device)逐级试,失败原因会打在启动日志里
 | `POST /api/v1/queries/save` | 保存一条查询(存界面选择,不是 SQL/AST) |
 | `POST /api/v1/queries/delete` | 删除一条已保存的查询 |
 | `POST /api/v1/enrich/mmdb` | 上传 GeoLite2-City,立即生效 |
-| `GET /api/v1/ban/commands` | 生成封禁某地址的命令文本,`?ip=&dir=&ttl=`;不执行任何东西 |
+| `GET /api/v1/interfaces` | 最近 7 天出现过的接口列表(device_id / if_index / if_speed) |
+| `GET /api/v1/interfaces/series` | 接口带宽时序 + flow 对账,参数:device_id / if_index / from / to / step |
 
 Query AST 示例:
 
@@ -555,13 +557,14 @@ make bpf-verify  # 重新编译并与库里的 .o 比对(CI 跑这个)
 - [x] ClickHouse 存储层(flows / flows_1m / ip_metadata,托管子进程)
 - [x] 本机采集:XDP 优先,三级降级
 - [x] sFlow v5 / NetFlow v5 Collector 与 Normalizer
+- [x] sFlow extended_gateway 解码:BGP 下一跳与 AS 路径(as_path 字段)
 - [x] 写入时富化(ip2asn / DB-IP 一键在线同步,IANA 服务名分类)
 - [x] Query AST 与查询引擎(字段白名单、强制时间范围与 limit)
 - [x] Dashboard / Hosts / Conversations / ASN-Country / Geo Map / Explorer
+- [x] 接口带宽视图(sFlow counter sample → if_counters 表 → 时序图 + flow 对账)
 - [x] 实时页(读内存,不查库)与显示时 DNS 反查(300 秒缓存)
 - [x] 认证:启动参数 + 内存会话
 - [x] Saved Query(查询条件保存复用)
-- [x] 封禁命令生成:榜单上点 + 号,给 nftables 与 iptables 两份可复制的命令
 - [ ] Dashboard 自定义(卡片增删与布局)
 - [ ] Benchmark 定稿 `ORDER BY`
 

@@ -76,7 +76,10 @@ CREATE TABLE IF NOT EXISTS flows
     src_asn         UInt32,
     dst_asn         UInt32,
     src_org         LowCardinality(String),
-    dst_org         LowCardinality(String)
+    dst_org         LowCardinality(String),
+
+    bgp_next_hop    String,
+    as_path         String
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMMDD(timestamp)
@@ -241,4 +244,15 @@ TTL toDateTime(timestamp) + INTERVAL 90 DAY
 // allDDL 是建表顺序。物化视图必须在两张表都存在之后创建。
 func allDDL() []string {
 	return []string{flowsDDL, flows1mDDL, flows1mMVDDL, ipMetadataDDL, ifCountersDDL}
+}
+
+// migrateDDL 是已上线版本的 schema 迁移语句。
+//
+// 新增列用 ADD COLUMN IF NOT EXISTS:幂等,重复执行不报错。
+// 不用重建表 —— 新列对旧行的值是空字符串,符合预期(历史 flow 没有 BGP 信息)。
+func migrateDDL() []string {
+	return []string{
+		`ALTER TABLE flows ADD COLUMN IF NOT EXISTS bgp_next_hop String DEFAULT ''`,
+		`ALTER TABLE flows ADD COLUMN IF NOT EXISTS as_path      String DEFAULT ''`,
+	}
 }
