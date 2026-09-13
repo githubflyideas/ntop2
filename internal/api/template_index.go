@@ -175,6 +175,28 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
 .tag{display:inline-block;padding:1px 7px;border-radius:9px;font-size:13px;
  background:rgba(61,126,255,.14);color:#8ab4ff}
 .up{border:1px dashed var(--line2);border-radius:8px;padding:16px;text-align:center;color:var(--dim)}
+
+/* Dashboard 自定义浮层 */
+.cust-btn{padding:5px 11px;background:var(--panel);border:1px solid var(--line2);
+ border-radius:5px;color:var(--dim);font-size:13.5px;cursor:pointer;white-space:nowrap}
+.cust-btn:hover{color:var(--fg);border-color:var(--dim2)}
+.cust-overlay{display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.45)}
+.cust-overlay.on{display:block}
+.cust-panel{position:fixed;top:0;right:0;bottom:0;width:300px;z-index:201;
+ background:var(--panel);border-left:1px solid var(--line);padding:18px 16px;
+ overflow-y:auto;display:flex;flex-direction:column;gap:0}
+.cust-panel h3{margin:0 0 14px;font-size:15px;font-weight:600}
+.cust-item{display:flex;align-items:center;gap:8px;padding:8px 0;
+ border-bottom:1px solid var(--line);font-size:14.5px}
+.cust-item:last-child{border-bottom:0}
+.cust-item label{flex:1;cursor:pointer;display:flex;align-items:center;gap:8px}
+.cust-item .arrows{display:flex;flex-direction:column;gap:2px}
+.cust-item .arrows button{padding:1px 5px;background:none;border:1px solid var(--line2);
+ border-radius:3px;color:var(--dim);font-size:11px;cursor:pointer;line-height:1.4}
+.cust-item .arrows button:hover{color:var(--fg);border-color:var(--dim2)}
+.cust-close{margin-top:14px;padding:7px;background:var(--line);border:0;border-radius:5px;
+ color:var(--fg);font-size:14px;cursor:pointer;width:100%}
+.cust-close:hover{background:var(--line2)}
 </style>
 </head>
 <body>
@@ -224,30 +246,21 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
   <div class="bar pills" id="pills" style="display:none"></div>
 
   <section class="on" id="s-dash">
+    <div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:10px">
+      <button class="cust-btn" id="dash-cust-btn">⊞ 自定义卡片</button>
+    </div>
     <div class="kpis" id="kpis"></div>
-    <div class="grid g2">
-      <div class="panel wide">
-        <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
-          <h2>流量趋势</h2>
-          <select id="ts-dim" style="margin-left:auto;font-size:14px">
-            <option value="application" selected>按应用堆叠</option>
-            <option value="protocol">按协议堆叠</option>
-            <option value="src_country">按源国家堆叠</option>
-            <option value="dst_port">按目的端口堆叠</option>
-            <option value="">只看总量</option>
-          </select>
-        </div>
-        <p class="hint" id="ts-hint">估算值(已按采样率还原)。拖动下方滑块可放大某一段</p>
-        <div id="ts" class="ec tall"></div>
-      </div>
-      <div class="panel"><h2>Top Talkers(源)</h2><p class="hint">谁发出最多</p><div id="topsrc"></div></div>
-      <div class="panel"><h2>Top Destinations(目的)</h2><p class="hint">流量去了哪</p><div id="topdst"></div></div>
-      <div class="panel"><h2>应用(按端口推断)</h2><p class="hint">端口推断,不是 DPI 确认</p><div id="topapp" class="ec pie"></div></div>
-      <div class="panel"><h2>协议</h2><p class="hint"></p><div id="topproto" class="ec pie"></div></div>
-      <div class="panel"><h2>Top 目的端口</h2><p class="hint"></p><div id="topport"></div></div>
-      <div class="panel"><h2>Top ASN</h2><p class="hint">需要 ip2asn 库</p><div id="topasn"></div></div>
+    <div class="grid g2" id="dash-grid">
     </div>
   </section>
+
+  <!-- Dashboard 自定义浮层 -->
+  <div class="cust-overlay" id="cust-overlay"></div>
+  <div class="cust-panel" id="cust-panel" style="display:none">
+    <h3>自定义 Dashboard</h3>
+    <div id="cust-list"></div>
+    <button class="cust-close" id="cust-close">关闭</button>
+  </div>
 
   <section id="s-hosts">
     <div class="grid g2">
@@ -1038,19 +1051,155 @@ async function loadKPI(){
 }
 function kpi(k,v,n){ return '<div class="kpi"><div class="k">'+k+'</div><div class="v">'+v+'</div><div class="n">'+n+'</div></div>'; }
 
+// --- Dashboard 自定义 ---
+//
+// 卡片配置表。id 是 DOM 锚点,wide 表示占满一行,loader 是渲染函数。
+// 顺序与可见性从 localStorage 读,没有记录时用这个顺序全部显示。
+const DASH_CARD_DEFS = [
+  {id:'ts',    title:'流量趋势',        wide:true,
+   html:'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap"><h2>流量趋势</h2>'
+      + '<select id="ts-dim" style="margin-left:auto;font-size:14px">'
+      + '<option value="application" selected>按应用堆叠</option>'
+      + '<option value="protocol">按协议堆叠</option>'
+      + '<option value="src_country">按源国家堆叠</option>'
+      + '<option value="dst_port">按目的端口堆叠</option>'
+      + '<option value="">只看总量</option>'
+      + '</select></div>'
+      + '<p class="hint" id="ts-hint">估算值(已按采样率还原)。拖动下方滑块可放大某一段</p>'
+      + '<div id="ts" class="ec tall"></div>'},
+  {id:'topsrc', title:'Top Talkers(源)',   wide:false,
+   html:'<h2>Top Talkers(源)</h2><p class="hint">谁发出最多</p><div id="topsrc"></div>'},
+  {id:'topdst', title:'Top Destinations',  wide:false,
+   html:'<h2>Top Destinations(目的)</h2><p class="hint">流量去了哪</p><div id="topdst"></div>'},
+  {id:'topapp', title:'应用构成',          wide:false,
+   html:'<h2>应用(按端口推断)</h2><p class="hint">端口推断,不是 DPI 确认</p><div id="topapp" class="ec pie"></div>'},
+  {id:'topproto', title:'协议构成',        wide:false,
+   html:'<h2>协议</h2><p class="hint"></p><div id="topproto" class="ec pie"></div>'},
+  {id:'topport', title:'Top 目的端口',     wide:false,
+   html:'<h2>Top 目的端口</h2><p class="hint"></p><div id="topport"></div>'},
+  {id:'topasn',  title:'Top ASN',          wide:false,
+   html:'<h2>Top ASN</h2><p class="hint">需要 ip2asn 库</p><div id="topasn"></div>'},
+];
+
+const DASH_LS_KEY = 'ntop2_dash_v1';
+
+// dashConfig 读 localStorage,返回 [{id, visible}] 按用户顺序。
+// 不认识的 id 忽略;新增的卡片追加到末尾、默认显示。
+function dashConfig(){
+  let saved = [];
+  try { saved = JSON.parse(localStorage.getItem(DASH_LS_KEY)||'[]'); } catch(e){}
+  const known = DASH_CARD_DEFS.map(c=>c.id);
+  // 保留用户已有的配置
+  const out = saved.filter(x=>known.indexOf(x.id)>=0);
+  // 补上新增卡片
+  for(const def of DASH_CARD_DEFS){
+    if(!out.find(x=>x.id===def.id)) out.push({id:def.id, visible:true});
+  }
+  return out;
+}
+
+function saveDashConfig(cfg){
+  try { localStorage.setItem(DASH_LS_KEY, JSON.stringify(cfg)); } catch(e){}
+}
+
+// renderDashGrid 按当前配置重建 #dash-grid 的 DOM。
+function renderDashGrid(){
+  const cfg = dashConfig();
+  const grid = $('#dash-grid');
+  grid.innerHTML = '';
+  for(const item of cfg){
+    if(!item.visible) continue;
+    const def = DASH_CARD_DEFS.find(d=>d.id===item.id);
+    if(!def) continue;
+    const div = document.createElement('div');
+    div.className = 'panel' + (def.wide?' wide':'');
+    div.dataset.card = def.id;
+    div.innerHTML = def.html;
+    grid.appendChild(div);
+  }
+}
+
+// loadDashCards 只加载当前可见的卡片。
+async function loadDashCards(){
+  const cfg = dashConfig();
+  const visible = new Set(cfg.filter(x=>x.visible).map(x=>x.id));
+  const jobs = [];
+  if(visible.has('ts'))       jobs.push(timeseries($('#ts')));
+  if(visible.has('topsrc'))   jobs.push(topTable($('#topsrc'),'src_ip',{drill:'src_ip'}));
+  if(visible.has('topdst'))   jobs.push(topTable($('#topdst'),'dst_ip',{drill:'dst_ip'}));
+  if(visible.has('topapp'))   jobs.push(donut($('#topapp'),'application'));
+  if(visible.has('topproto')) jobs.push(donut($('#topproto'),'protocol',{label:protoLabel}));
+  if(visible.has('topport'))  jobs.push(topTable($('#topport'),'dst_port',{filter:'dst_port'}));
+  if(visible.has('topasn'))   jobs.push(topTable($('#topasn'),'src_asn',
+                                {filter:'src_asn',blank:v=>v==='0',fmt:v=>'AS'+esc(v)}));
+  await Promise.all([loadKPI(), ...jobs]);
+}
+
+// renderCustPanel 渲染自定义浮层的卡片列表。
+function renderCustPanel(){
+  const cfg = dashConfig();
+  const list = $('#cust-list');
+  list.innerHTML = '';
+  cfg.forEach((item, i)=>{
+    const def = DASH_CARD_DEFS.find(d=>d.id===item.id);
+    if(!def) return;
+    const div = document.createElement('div');
+    div.className = 'cust-item';
+    div.innerHTML =
+      '<label><input type="checkbox" data-id="'+esc(item.id)+'"'+(item.visible?' checked':'')+'> '
+      + esc(def.title)+'</label>'
+      + '<div class="arrows">'
+      + '<button data-mv="'+i+'" data-dir="-1" title="上移">▲</button>'
+      + '<button data-mv="'+i+'" data-dir="1"  title="下移">▼</button>'
+      + '</div>';
+    list.appendChild(div);
+  });
+
+  list.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+    cb.onchange=()=>{
+      const c = dashConfig();
+      const it = c.find(x=>x.id===cb.dataset.id);
+      if(it) it.visible = cb.checked;
+      saveDashConfig(c);
+      renderDashGrid();
+      loadDashCards().then(resizeCharts).catch(e=>showErr(e.message));
+    };
+  });
+
+  list.querySelectorAll('[data-mv]').forEach(btn=>{
+    btn.onclick=()=>{
+      const c = dashConfig();
+      const i = Number(btn.dataset.mv);
+      const dir = Number(btn.dataset.dir);
+      const j = i+dir;
+      if(j<0||j>=c.length) return;
+      [c[i],c[j]]=[c[j],c[i]];
+      saveDashConfig(c);
+      renderCustPanel();
+      renderDashGrid();
+      loadDashCards().then(resizeCharts).catch(e=>showErr(e.message));
+    };
+  });
+}
+
+// 自定义浮层开关
+$('#dash-cust-btn').onclick=()=>{
+  renderCustPanel();
+  $('#cust-panel').style.display='flex';
+  $('#cust-overlay').classList.add('on');
+};
+function closeCust(){
+  $('#cust-panel').style.display='none';
+  $('#cust-overlay').classList.remove('on');
+}
+$('#cust-close').onclick=closeCust;
+$('#cust-overlay').onclick=closeCust;
+
 async function loadDash(){
   showErr('');
   $('#scope').textContent='';
-  await Promise.all([
-    loadKPI(),
-    timeseries($('#ts')),
-    topTable($('#topsrc'),'src_ip',{drill:'src_ip'}),
-    topTable($('#topdst'),'dst_ip',{drill:'dst_ip'}),
-    donut($('#topapp'),'application'),
-    donut($('#topproto'),'protocol',{label:protoLabel}),
-    topTable($('#topport'),'dst_port',{filter:'dst_port'}),
-    topTable($('#topasn'),'src_asn',{filter:'src_asn',blank:v=>v==='0',fmt:v=>'AS'+esc(v)}),
-  ]);
+  renderDashGrid();
+  await loadDashCards();
 }
 
 async function loadHosts(){
@@ -1646,7 +1795,12 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
 
 $('#refresh').onclick=()=>load(current());
 $('#metric').onchange=()=>load(current());
-$('#ts-dim').onchange=()=>{ if(!refreshRange()) timeseries($('#ts')); };
+// ts-dim 是动态注入 dash-grid 里的,用事件委托而不是直接绑定
+$('#dash-grid').addEventListener('change', e=>{
+  if(e.target && e.target.id==='ts-dim'){
+    if(!refreshRange()) timeseries($('#ts'));
+  }
+});
 $('#map-dir').onchange=()=>{ if(!refreshRange()) geoMap($('#g-map')); };
 
 // 切到"自定义…"时把两个输入框预填成当前区间,而不是留空 —— 从当前
