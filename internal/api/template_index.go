@@ -87,34 +87,6 @@ tbody tr:hover td{background:rgba(61,126,255,.06)}
 code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
 .drill{color:var(--blue);cursor:pointer}
 .drill:hover{text-decoration:underline}
-/* 榜单里地址后面那个 + 号,以及它点开的浮层。做成浮层而不是跳一页:
-   看见一个地址不对劲想立刻掐掉它,中间多一次页面切换就会看丢是哪一行。 */
-.plus{display:inline-block;margin-left:6px;width:16px;height:16px;line-height:14px;
-  text-align:center;border:1px solid var(--line2);border-radius:4px;color:var(--dim2);
-  cursor:pointer;font-size:13px;user-select:none;vertical-align:1px}
-.plus:hover{color:var(--fg);border-color:var(--dim2)}
-.pop{position:absolute;z-index:60;width:min(560px,92vw);max-height:64vh;overflow:auto;
-  padding:11px 12px;font-size:13.5px;
-  background:var(--panel);border:1px solid var(--line2);border-radius:7px;
-  box-shadow:0 8px 26px rgba(0,0,0,.45)}
-.pop .ttl{font-weight:600;margin-bottom:6px}
-.pop label{display:block;color:var(--dim);margin:8px 0 3px}
-.pop select{width:100%}
-.pop .why{color:var(--dim);line-height:1.55;white-space:pre-wrap}
-.pop .row{margin-top:11px;display:flex;gap:8px;align-items:center}
-.pop .msg{margin-top:8px;color:var(--amber);line-height:1.5;white-space:pre-wrap}
-.pop .two{display:flex;gap:10px}
-.pop .two>div{flex:1}
-/* 命令块。选中要方便 —— 这一屏存在的唯一目的就是把它复制走。 */
-.pop .sec{margin-top:12px;border-top:1px solid var(--line);padding-top:9px}
-.pop .sec .h{display:flex;justify-content:space-between;align-items:center;gap:8px}
-.pop .sec .h b{font-weight:600}
-.pop pre{margin:6px 0 0;padding:8px 9px;background:var(--bg);border:1px solid var(--line);
-  border-radius:6px;font:13px/1.62 var(--mono);color:var(--fg);
-  white-space:pre;overflow-x:auto;user-select:all}
-.pop .be{display:flex;gap:6px;margin-top:10px}
-.pop .be button.on{color:var(--fg);border-color:var(--dim2)}
-
 /* 横向条形:用背景渐变画条,不需要 SVG */
 .barcell{position:relative;padding:5px 8px}
 .barcell .fill{position:absolute;left:0;top:0;bottom:0;background:rgba(61,126,255,.18);border-radius:3px}
@@ -591,10 +563,6 @@ function ast(o){
 
 async function topTable(el, groupBy, opts){
   opts = opts||{};
-  // + 号只出现在地址维度上。按 groupBy 判断而不是让每个调用方传一个开关:
-  // 这个函数被 Dashboard、Hosts 和下钻页共用,漏传一处就是"同一张榜单在
-  // 另一页上没有那个按钮",而使用者只会觉得时有时无。
-  const banable = groupBy==='src_ip' || groupBy==='dst_ip';
   const q = ast({group_by:[groupBy], limit:opts.limit||10,
                  metrics:[metric()], filters:opts.filters});
   let d;
@@ -605,141 +573,23 @@ async function topTable(el, groupBy, opts){
   const max = Math.max.apply(null, d.rows.map(r=>Number(r[1])||0)) || 1;
   let h='<table><tbody>';
   for(const r of d.rows){
-    // label 一律先转成字符串:ASN 这类数字维度 JSON 解出来是 number,
-    // 拿它跟 '0' 比较永远不相等,界面上就会出现一个点得动的 "AS0"。
     const label = r[0]==null ? '' : String(r[0]), val = Number(r[1])||0;
     const pct = (val/max*100).toFixed(1);
-    // 空值统一显示成"(未知)":富化库缺这一条时 label 是空字符串,
-    // 直接渲染出来就是一行只有数字、名字那格空白的表,看着像界面坏了。
-    // 空值也不给点击 —— 按空字符串过滤只会得到"未知的那一堆",没有意义。
-    //
-    // opts.blank 是给"用某个具体取值表示未知"的维度用的(ASN 的 0)。
-    // 它比 opts.fmt 优先:两边各写一遍未知的样子,就会出现同一页上
-    // 既有"(未知)"又有"未知"又有"不知道"的三种说法。
     const blank = label==='' || (opts.blank ? !!opts.blank(label) : false);
     const disp = blank ? '<span style="color:var(--dim2)">(未知)</span>'
                : (opts.fmt ? opts.fmt(label) : esc(label));
-    // drill 跳到 Hosts 页展开这个主机的构成;filter 只是把它加成全局
-    // 过滤条件。两者不能混用一个属性:国家、ASN 这类维度没有"主机详情"
-    // 可展开,点过去会是一屏用 country 当 IP 查出来的空表。
     let clickable = '';
     if(blank) clickable = '';
     else if(opts.drill) clickable = ' class="drill" data-drill="'+esc(opts.drill)+'" data-val="'+esc(label)+'"';
     else if(opts.filter) clickable = ' class="drill" data-filter="'+esc(opts.filter)+'" data-val="'+esc(label)+'"';
-      // 未知那一行不给 + 号:空字符串封不了,点开只会是一句报错。
-    const plus = (banable && !blank)
-      ? '<span class="plus" data-plus="'+esc(label)+'" title="生成封禁这个地址的命令">+</span>' : '';
     h += '<tr><td class="barcell"><span class="fill" style="width:'+pct+'%"></span>'
-       + '<span class="txt mono"'+clickable+'>'+disp+'</span>'+plus+'</td>'
+       + '<span class="txt mono"'+clickable+'>'+disp+'</span></td>'
        + '<td class="num">'+fmtMetric(val)+'</td></tr>';
   }
   el.innerHTML = h+'</tbody></table>';
   el.querySelectorAll('[data-drill]').forEach(n=>n.onclick=()=>drillTo(n.dataset.drill, n.dataset.val));
   el.querySelectorAll('[data-filter]').forEach(n=>n.onclick=()=>addFilter(n.dataset.filter, n.dataset.val));
-  // stopPropagation 是必须的:文档上那个"点别处就关浮层"的监听器会在同一次
-  // 点击里先把刚打开的浮层关掉。
-  el.querySelectorAll('[data-plus]').forEach(n=>n.onclick=e=>{
-    e.stopPropagation(); openBanPop(n, n.dataset.plus);
-  });
-  // 反查是"表格已经画出来之后再补一行小字",不能挡在渲染前面:上游 DNS
-  // 不响应时那两秒的超时会变成整页空白。国家、ASN 这类维度不反查,
-  // 所以由调用方显式打开而不是看着像 IP 就查。
   if(opts.resolve) annotateNames(el, d.rows.map(r=>String(r[0])));
-}
-
-// --- 封禁:只生成命令 ---
-//
-// 这个页面不动内核。按 + 号得到的是一段可以复制、可以先读一遍、可以自己
-// 改的命令,执行与否由人在有权限的终端里决定。理由很简单:一个看流量的
-// 看板一旦能改包过滤,它就成了这台机器上权限最大的东西,而封错一个地址
-// (网关、自己正在用的地址)之后连这个页面都打不开,救不回来。
-
-let POP = null;
-function closePop(){ if(POP){ POP.remove(); POP=null; } }
-document.addEventListener('click', e=>{ if(POP && !POP.contains(e.target)) closePop(); });
-document.addEventListener('keydown', e=>{ if(e.key==='Escape') closePop(); });
-
-async function openBanPop(anchor, ip){
-  closePop();
-  const p = document.createElement('div');
-  p.className = 'pop';
-  // 状态挂在元素上而不是 dataset 里。放 dataset 的话浮层自己就带上了
-  // data-dir / data-ttl,而里面那两个选择框也用这两个属性 ——
-  // querySelector('[data-dir]') 于是先命中浮层本身,取到的 value 是空的。
-  p._st = {ip:ip, dir:'both', ttl:'1h', be:'nft'};
-  // 浮层内部的点击一概不往外冒。文档上那个"点别处就关浮层"的监听器判断的是
-  // POP.contains(e.target),而换方向、换后端都会把浮层内容整块重画 ——
-  // 事件冒到文档时目标元素已经不在浮层里了,浮层于是自己关掉。
-  p.addEventListener('click', e=>e.stopPropagation());
-  p.innerHTML = '<div class="ttl mono">'+esc(ip)+'</div><div class="why">生成命令…</div>';
-  document.body.appendChild(p);
-  // 贴着按钮下方,右边够不着时往左收 —— 榜单最右边那一列的浮层否则会
-  // 顶出可视区域,命令块直接看不全。
-  const r = anchor.getBoundingClientRect();
-  const maxLeft = window.scrollX + document.documentElement.clientWidth - p.offsetWidth - 12;
-  p.style.top = (r.bottom + window.scrollY + 6)+'px';
-  p.style.left = Math.max(8, Math.min(r.left + window.scrollX, maxLeft))+'px';
-  POP = p;
-  await banLoad(p);
-}
-
-// banLoad 去服务端要命令。方向或时长改了就重来一次 —— 这些分支(v4/v6、
-// 三种方向、有没有到期)在服务端有测试钉着,前端自己拼早晚会拼错一处。
-async function banLoad(p){
-  const q = 'ip='+encodeURIComponent(p._st.ip)+'&dir='+encodeURIComponent(p._st.dir)
-          + '&ttl='+encodeURIComponent(p._st.ttl);
-  let plan;
-  try { plan = await api('/api/v1/ban/commands?'+q); }
-  catch(e){
-    if(POP === p) p.innerHTML = '<div class="ttl mono">'+esc(p._st.ip)+'</div>'
-                              + '<div class="msg">'+esc(e.message)+'</div>';
-    return;
-  }
-  if(POP !== p) return;   // 等回话的这段时间里被关掉、或者点了另一行
-  p._plan = plan;
-  renderBanPop(p);
-}
-
-function renderBanPop(p){
-  const plan = p._plan;
-  const be = p._st.be;
-  const secs = (be === 'ipt' ? plan.iptables : plan.nft) || [];
-  const opt = (v,t,cur)=>'<option value="'+v+'"'+(v===cur?' selected':'')+'>'+t+'</option>';
-
-  let h = '<div class="ttl mono">'+esc(plan.ip)+'</div>'
-        + '<div class="why">下面的命令这个页面不会执行 —— 复制到有权限的终端里跑。'
-        + '页面本身是只读的。</div>';
-  if(plan.warning) h += '<div class="msg">当心:'+esc(plan.warning)+'</div>';
-  // 方向是相对这个地址说的,不是相对网卡:入向 = 不再收它的包,出向 =
-  // 不再发给它。按网卡方向说的话,同一个地址在源榜单和目的榜单里点出来
-  // 的效果会正好相反。
-  h += '<div class="two"><div><label>方向</label><select data-dir>'
-     + opt('both','双向(不收也不发)',p._st.dir)
-     + opt('in','入向(不收它的包)',p._st.dir)
-     + opt('out','出向(不发给它)',p._st.dir)
-     + '</select></div><div><label>时长</label><select data-ttl>'
-     + opt('1h','1 小时',p._st.ttl)
-     + opt('24h','24 小时',p._st.ttl)
-     + opt('7d','7 天',p._st.ttl)
-     + opt('','永久',p._st.ttl)
-     + '</select></div></div>'
-     + '<div class="why" style="margin-top:6px">'+esc(plan.ttl_label)+'</div>'
-     + '<div class="be"><button class="gh'+(be==='nft'?' on':'')+'" data-be="nft">nftables</button>'
-     + '<button class="gh'+(be==='ipt'?' on':'')+'" data-be="ipt">iptables + ipset</button></div>';
-
-  for(const s of secs){
-    h += '<div class="sec"><div class="h"><b>'+esc(s.title)+'</b>'
-       + '<button class="gh" data-copy="'+esc(s.text)+'">复制</button></div>'
-       + (s.hint ? '<div class="why">'+esc(s.hint)+'</div>' : '')
-       + '<pre>'+esc(s.text)+'</pre></div>';
-  }
-  p.innerHTML = h;
-
-  p.querySelector('[data-dir]').onchange = e=>{ p._st.dir = e.target.value; banLoad(p); };
-  p.querySelector('[data-ttl]').onchange = e=>{ p._st.ttl = e.target.value; banLoad(p); };
-  // 换后端不用再问服务端一次:两份命令是一起回来的。
-  p.querySelectorAll('[data-be]').forEach(n=>n.onclick=()=>{ p._st.be = n.dataset.be; renderBanPop(p); });
-  p.querySelectorAll('[data-copy]').forEach(n=>n.onclick=()=>copyText(n.dataset.copy, n));
 }
 
 // copyText 带一条退路。navigator.clipboard 只在安全上下文里有,而这个界面
@@ -2000,9 +1850,6 @@ function load(tab){
   const f={dash:loadDash,hosts:loadHosts,conv:loadConv,geo:loadGeo,
            explore:()=>{}, live:loadLive,
            settings:async()=>{
-             // 三块各自独立地跑:串起来的话前面一块出错后面就整块不显示 ——
-             // 同步源列表取不回来不该连"封禁中"那张表一起消失,而那张表恰恰
-             // 是出了事最想看的一张。
              const r = await Promise.allSettled([loadOverview(), loadSources()]);
              const bad = r.find(x=>x.status==='rejected');
              if(bad) throw bad.reason;

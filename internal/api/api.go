@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/githubflyideas/ntop2ban/internal/auth"
-	"github.com/githubflyideas/ntop2ban/internal/ban"
 	"github.com/githubflyideas/ntop2ban/internal/collector"
 	"github.com/githubflyideas/ntop2ban/internal/dnscache"
 	"github.com/githubflyideas/ntop2ban/internal/enrich"
@@ -49,9 +48,6 @@ type Server struct {
 
 	// queries 是保存查询的持久化(DataDir/queries.json)。
 	queries *queryStore
-
-	// ban 生成封禁命令。nil 表示这个构造里没传,界面上按 + 号会说明。
-	ban *ban.Builder
 
 	// index 是填好版本号的首页 HTML。见 handleIndex。
 	index string
@@ -99,9 +95,7 @@ type Config struct {
 	// DNS 是反查域名的解析器。留空则界面上不显示域名。
 	DNS *dnscache.Resolver
 
-	// BanProtect 是"生成封禁命令时要提醒别封"的地址,写成 host 或 host:port
-	// (外部 ClickHouse、上游 DNS)。封禁命令的生成本身总是开着 —— 它不动
-	// 内核,没有什么需要开关。
+	// BanProtect 已移除（封禁功能已删除）。
 	BanProtect []string
 }
 
@@ -115,7 +109,6 @@ func New(cfg Config) *Server {
 		city: cfg.City, syncer: cfg.Syncer,
 		log: lg, DataDir: cfg.DataDir, Inputs: cfg.Inputs,
 		feed: cfg.Feed, reporters: cfg.Reporters, dns: cfg.DNS,
-		ban:     ban.NewBuilder(cfg.BanProtect),
 		queries: newQueryStore(cfg.DataDir),
 		index:   renderIndex(cfg.Version, sortedKeys(cfg.Stores)),
 	}
@@ -173,10 +166,6 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/enrich/mmdb", s.authed(s.handleMMDBUpload))
 	mux.HandleFunc("/api/v1/enrich/sources", s.authed(s.handleEnrichSources))
 	mux.HandleFunc("/api/v1/enrich/sync", s.authed(s.handleEnrichSync))
-
-	// 封禁命令的生成。只读,但一样要登录 —— 它会说出这台机器的默认网关和
-	// 本机地址,那是不该给未登录的人看的东西。
-	mux.HandleFunc("/api/v1/ban/commands", s.authed(s.handleBanCommands))
 }
 
 // authed 包装需要登录的 handler。

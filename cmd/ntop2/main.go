@@ -3,8 +3,7 @@
 // 采集(本机 XDP/AF_PACKET、远端 sFlow v5、远端 NetFlow v5)→
 // Canonical Flow → 富化 → ClickHouse → Query Engine → Web 界面。
 //
-// 采集侧只观测,不在数据面上拦包。要封一个地址是人在榜单上点出来的,
-// 封禁只生成命令(internal/ban),本进程不动内核。
+// 采集侧只观测,不在数据面上拦包。
 package main
 
 import (
@@ -248,9 +247,6 @@ func main() {
 		City: cityDB, Syncer: syncer,
 		DataDir: *dataDir, Inputs: inputLabels, Version: version,
 		Feed: feed, Reporters: reporters, DNS: resolver,
-		// 这两个地址交给封禁命令的护栏:把自己的存储或者上游 DNS 封掉,
-		// 是这个按钮第二容易犯的错(第一是封掉网关)。
-		BanProtect: []string{*chAddr, *dnsUpstream},
 	})
 	mux := http.NewServeMux()
 	srv.Routes(mux)
