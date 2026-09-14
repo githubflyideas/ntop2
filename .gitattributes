@@ -1,0 +1,25 @@
+# 仓库里一律存 LF。
+#
+# 为什么需要这个文件:开发是在 Windows 上做的,写文件的工具默认用 CRLF,
+# 于是 CRLF 被直接提交进了 blob。gofmt 只认 LF —— 它把整个文件当成
+# "格式不对",`gofmt -l` 会把仓库里几乎每个 .go 文件都列出来,真正的
+# 对齐问题反而被埋掉。这不是 gofmt 挑剔,Go 的规范就是 LF。
+#
+# eol=lf 而不是 text=auto:后者只保证仓库里是 LF、工作区按平台转换,
+# 但这个项目里没有任何东西需要 CRLF,统一成 LF 少一层转换少一处意外。
+* text=auto eol=lf
+
+*.go text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+*.js text eol=lf
+*.sql text eol=lf
+
+# 二进制:不要碰,也不要试着 diff。
+*.png binary
+*.jpg binary
+*.gz binary
+*.mmdb binary

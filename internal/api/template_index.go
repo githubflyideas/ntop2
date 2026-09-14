@@ -192,7 +192,7 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
 .cust-item label{flex:1;cursor:pointer;display:flex;align-items:center;gap:8px}
 .cust-item .arrows{display:flex;flex-direction:column;gap:2px}
 .cust-item .arrows button{padding:1px 5px;background:none;border:1px solid var(--line2);
- border-radius:3px;color:var(--dim);font-size:11px;cursor:pointer;line-height:1.4}
+ border-radius:3px;color:var(--dim);font-size:13px;cursor:pointer;line-height:1.4}
 .cust-item .arrows button:hover{color:var(--fg);border-color:var(--dim2)}
 .cust-close{margin-top:14px;padding:7px;background:var(--line);border:0;border-radius:5px;
  color:var(--fg);font-size:14px;cursor:pointer;width:100%}
@@ -373,7 +373,7 @@ pre{margin:9px 0 0;padding:11px;background:#0f1520;border:1px solid var(--line);
     <div class="grid g2" style="margin-top:0">
       <div class="panel wide">
         <h2>带宽利用率</h2>
-        <p class="hint" id="if-bw-hint">入向 / 出向 bits/s。接口速率未知时不显示利用率百分比</p>
+        <p class="hint" id="if-bw-hint">入向 / 出向 bits/s。接口速率是(未知)时不显示利用率百分比</p>
         <div id="if-bw" class="ec tall"></div>
       </div>
       <div class="panel wide" id="if-acc-wrap" style="display:none">
@@ -2083,8 +2083,10 @@ function fillIfaceSelector(did){
   list.forEach(m=>{
     const o = document.createElement('option');
     o.value = String(m.if_index);
-    const speedStr = m.if_speed ? fmtBps(m.if_speed) : '速率未知';
-    o.textContent = '接口 ' + m.if_index + ' (' + speedStr + ')';
+    const speedStr = m.if_speed ? fmtBps(m.if_speed) : '(未知)';
+    // 不再把 speedStr 包一层括号:速率查不到时它本身就是"(未知)",
+    // 包起来会渲染成"接口 3 ((未知))"。
+    o.textContent = '接口 ' + m.if_index + ' · ' + speedStr;
     sel.appendChild(o);
   });
 }
@@ -2128,7 +2130,7 @@ function renderIfBw(d){
   if(speed > 0){
     hint.textContent = '接口速率 ' + fmtBps(speed) + '。入向 / 出向 bits/s 与利用率';
   } else {
-    hint.textContent = '接口速率未知,仅显示 bits/s(无法计算利用率)';
+    hint.textContent = '接口速率是(未知),仅显示 bits/s,无法计算利用率';
   }
 
   const opt = {
@@ -2137,8 +2139,8 @@ function renderIfBw(d){
     }},
     legend:{data:['入向','出向'],textStyle:{color:'#8b95a3'}},
     grid:{left:64,right:20,top:36,bottom:48},
-    xAxis:{type:'category',data:times,axisLabel:{color:'#8b95a3',fontSize:12}},
-    yAxis:{type:'value',axisLabel:{color:'#8b95a3',fontSize:12,
+    xAxis:{type:'category',data:times,axisLabel:{color:'#8b95a3',fontSize:13}},
+    yAxis:{type:'value',axisLabel:{color:'#8b95a3',fontSize:13,
       formatter:v=>fmtBps(v)},splitLine:{lineStyle:{color:'#232c3b'}}},
     dataZoom:[{type:'slider',bottom:4,height:20,fillerColor:'rgba(61,126,255,.2)',
       borderColor:'#232c3b',handleStyle:{color:'#3d7eff'},textStyle:{color:'#8b95a3'}}],
@@ -2157,7 +2159,7 @@ function renderIfBw(d){
   if(hasUtil){
     opt.yAxis = [opt.yAxis, {
       type:'value', min:0, max:100, position:'right',
-      axisLabel:{color:'#8b95a3',fontSize:12,formatter:v=>v+'%'},
+      axisLabel:{color:'#8b95a3',fontSize:13,formatter:v=>v+'%'},
       splitLine:{show:false}
     }];
     const inUtil  = pts.map(p=>p.in_util  < 0 ? null : p.in_util);
@@ -2192,12 +2194,12 @@ function renderIfAccount(d){
     tooltip:{trigger:'axis'},
     legend:{data:['Counter(权威)','Flow(估算)','比值'],textStyle:{color:'#8b95a3'}},
     grid:{left:64,right:60,top:36,bottom:32},
-    xAxis:{type:'category',data:times,axisLabel:{color:'#8b95a3',fontSize:12}},
+    xAxis:{type:'category',data:times,axisLabel:{color:'#8b95a3',fontSize:13}},
     yAxis:[
-      {type:'value',axisLabel:{color:'#8b95a3',fontSize:12,formatter:v=>fmtBps(v)},
+      {type:'value',axisLabel:{color:'#8b95a3',fontSize:13,formatter:v=>fmtBps(v)},
        splitLine:{lineStyle:{color:'#232c3b'}}},
       {type:'value',name:'比值',position:'right',min:0,max:2,
-       axisLabel:{color:'#8b95a3',fontSize:12,formatter:v=>v.toFixed(1)},
+       axisLabel:{color:'#8b95a3',fontSize:13,formatter:v=>v.toFixed(1)},
        splitLine:{show:false}}
     ],
     series:[
@@ -2238,8 +2240,8 @@ function renderIfErrors(d){
     tooltip:{trigger:'axis'},
     legend:{data:['丢包(in_discards)','错包(in_errors)'],textStyle:{color:'#8b95a3'}},
     grid:{left:52,right:20,top:36,bottom:32},
-    xAxis:{type:'category',data:times,axisLabel:{color:'#8b95a3',fontSize:12}},
-    yAxis:{type:'value',axisLabel:{color:'#8b95a3',fontSize:12},
+    xAxis:{type:'category',data:times,axisLabel:{color:'#8b95a3',fontSize:13}},
+    yAxis:{type:'value',axisLabel:{color:'#8b95a3',fontSize:13},
            splitLine:{lineStyle:{color:'#232c3b'}}},
     series:[
       {name:'丢包(in_discards)',type:'bar',stack:'err',data:discs,
