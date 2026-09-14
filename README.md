@@ -2,16 +2,15 @@
 
 **Watch the Top**
 
-单机 Flow Analytics 平台。XDP/eBPF 采集 + ClickHouse 存储 + 灵活查询。
 
-一个二进制,拷过去就跑。不需要 Elasticsearch、不需要装数据库
+一个二进制,拷过去就跑。不需要 Elasticsearc
 
 ---
 
 ## 这是什么
 
-以 ClickHouse 为核心,在单机部署场景下实现接近 ElastiFlow 核心 Flow
-Analytics 的能力: 不需要你再安装Ntop,Tcpdump,Wireshark,Tshark,.....Top Talker / Conversation / ASN / Country / Port /
+以 ClickHouse 为核心,在单机部署场景下实现接近 ElastiFlow 核心 Flow Analytics 的能力: 不需要你再安装Ntop,Tcpdump,Wireshark,Tshark,.....
+就拥有Top Talker / Conversation / ASN / Country / Port /
 Protocol / 时间序列 / 下钻,输入支持本机 XDP、远端 sFlow v5、远端
 NetFlow v5。
 
