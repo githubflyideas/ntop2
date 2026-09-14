@@ -1,0 +1,49 @@
+name: gofmt
+
+# 手动触发的格式化。
+#
+# 为什么需要它:开发机上没有 Go,也就没有 gofmt。而 gofmt 的对齐规则
+# (const 块的 = 列、行尾注释的列、struct 字段的类型列)是按 tabwriter
+# 的分组算出来的,靠人肉数空格每错一次就要等一轮 CI 才知道。
+#
+# 所以让 runner 来跑:它本来就装着 Go。跑完直接提交回 main,
+# 因为 gofmt 的改动定义上不会改变语义 —— 它只动空白。
+#
+# 只给 workflow_dispatch 不给 push:CI 自动改你的代码是件应该由人
+# 按下按钮才发生的事。push 上跑的是 build.yml 里只读的那个 fmt job,
+# 它负责告诉你"该按这个按钮了"。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: gofmt -w .
+        run: gofmt -w .
+
+      - name: 提交
+        run: |
+          if git diff --quiet; then
+            echo "已经是 gofmt 过的,没有要提交的东西。"
+            exit 0
+          fi
+          echo "以下文件被重新格式化:"
+          git diff --name-only
+          # 身份写在 runner 的这份 checkout 里,跟本机的 git config 无关。
+          # 推送用的是 actions/checkout 配好的 GITHUB_TOKEN,不涉及 PAT。
+          git config user.name "gofmt-bot"
+          git config user.email "gofmt-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "gofmt -w ."
+          git push
