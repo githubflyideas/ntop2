@@ -47,7 +47,7 @@ import (
 // benchCandidate は ORDER BY の一候補。
 type benchCandidate struct {
 	Name   string
-	Order  string // ClickHouse の ORDER BY 節（括弧なし）
+	Order  string   // ClickHouse の ORDER BY 節（括弧なし）
 	Tables []string // この候補で作ったテーブル名（teardown 用）
 }
 

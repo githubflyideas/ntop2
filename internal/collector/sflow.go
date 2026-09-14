@@ -39,8 +39,8 @@ const (
 	sflowIfCountersLen    = 88
 
 	// flow record 的 format 值。
-	sflowRawPacketHeader   = 1
-	sflowExtendedGateway   = 1003 // extended_gateway:BGP 下一跳 + AS 路径
+	sflowRawPacketHeader = 1
+	sflowExtendedGateway = 1003 // extended_gateway:BGP 下一跳 + AS 路径
 
 	// header_protocol 的枚举值。
 	sflowHeaderEthernet = 1

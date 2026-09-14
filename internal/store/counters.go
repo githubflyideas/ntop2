@@ -52,10 +52,10 @@ type BandwidthPoint struct {
 
 // FlowAccountPoint 是流量对账点。
 type FlowAccountPoint struct {
-	Ts          time.Time
-	CounterBps  float64 // if_counters 权威入向速率
-	FlowBps     float64 // flow 样本估算入向速率
-	Ratio       float64 // flow/counter,理论接近 1.0
+	Ts         time.Time
+	CounterBps float64 // if_counters 权威入向速率
+	FlowBps    float64 // flow 样本估算入向速率
+	Ratio      float64 // flow/counter,理论接近 1.0
 }
 
 // ListInterfaces 返回最近出现过的接口列表。

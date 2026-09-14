@@ -126,9 +126,9 @@ func TestAccountSeriesAlignment(t *testing.T) {
 	// 1_000_000 bps → 1_000_000/8 B/s × 60s = 7_500_000 bytes
 	// 2_000_000 bps → 2_000_000/8 B/s × 60s = 15_000_000 bytes,只给一半 7_500_000
 	flowPts := []CounterPoint{
-		{Ts: base.Add(step), InOctets: uint64(1_000_000 / 8 * 60)},        // 完全匹配 → ratio=1.0
+		{Ts: base.Add(step), InOctets: uint64(1_000_000 / 8 * 60)},         // 完全匹配 → ratio=1.0
 		{Ts: base.Add(2 * step), InOctets: uint64(2_000_000 / 8 * 60 / 2)}, // 只有一半 → ratio=0.5
-		{Ts: base.Add(4 * step), InOctets: 9999},                            // 没有对应 bw 点,跳过
+		{Ts: base.Add(4 * step), InOctets: 9999},                           // 没有对应 bw 点,跳过
 	}
 
 	acc := AccountSeries(bw, flowPts, step)

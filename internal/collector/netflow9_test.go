@@ -15,7 +15,8 @@ import (
 // 包头 + 一个 Template FlowSet + 一个 Data FlowSet。
 //
 // 字段定义:IPv4 src/dst(各 4B) + src/dst port(各 2B) + protocol(1B)
-//          + octetCount(4B) + packetCount(4B) + flowStart(4B) + flowEnd(4B)
+//   - octetCount(4B) + packetCount(4B) + flowStart(4B) + flowEnd(4B)
+//
 // 合计每条记录 29 字节。
 func buildV9Packet(t *testing.T) (pkt []byte, templateID uint16) {
 	t.Helper()
@@ -64,15 +65,15 @@ func buildV9Packet(t *testing.T) (pkt []byte, templateID uint16) {
 	// src=10.0.0.1 dst=10.0.0.2 sport=1234 dport=80 proto=6
 	// bytes=1000 pkts=5 start=1000ms end=2000ms
 	var rec []byte
-	rec = append(rec, 10, 0, 0, 1)     // src IP
-	rec = append(rec, 10, 0, 0, 2)     // dst IP
-	rec = appendU16(rec, 1234)          // src port
-	rec = appendU16(rec, 80)            // dst port
-	rec = append(rec, 6)                // TCP
-	rec = appendU32(rec, 1000)          // bytes
-	rec = appendU32(rec, 5)             // packets
-	rec = appendU32(rec, 1000)          // flow start (sysUptime ms)
-	rec = appendU32(rec, 2000)          // flow end (sysUptime ms)
+	rec = append(rec, 10, 0, 0, 1) // src IP
+	rec = append(rec, 10, 0, 0, 2) // dst IP
+	rec = appendU16(rec, 1234)     // src port
+	rec = appendU16(rec, 80)       // dst port
+	rec = append(rec, 6)           // TCP
+	rec = appendU32(rec, 1000)     // bytes
+	rec = appendU32(rec, 5)        // packets
+	rec = appendU32(rec, 1000)     // flow start (sysUptime ms)
+	rec = appendU32(rec, 2000)     // flow end (sysUptime ms)
 
 	if len(rec) != rowLen {
 		t.Fatalf("record size %d != expected %d", len(rec), rowLen)
@@ -87,12 +88,12 @@ func buildV9Packet(t *testing.T) (pkt []byte, templateID uint16) {
 	// version(2)=9 count(2)=2 sysUptime(4)=5000 unixSecs(4) seqNum(4) domainID(4)
 	now := uint32(time.Now().Unix())
 	var hdr []byte
-	hdr = appendU16(hdr, 9)     // version
-	hdr = appendU16(hdr, 2)     // flowset count
-	hdr = appendU32(hdr, 5000)  // sysUptime = 5000ms
-	hdr = appendU32(hdr, now)   // unixSecs
-	hdr = appendU32(hdr, 1)     // seqNum
-	hdr = appendU32(hdr, 100)   // domainID
+	hdr = appendU16(hdr, 9)    // version
+	hdr = appendU16(hdr, 2)    // flowset count
+	hdr = appendU32(hdr, 5000) // sysUptime = 5000ms
+	hdr = appendU32(hdr, now)  // unixSecs
+	hdr = appendU32(hdr, 1)    // seqNum
+	hdr = appendU32(hdr, 100)  // domainID
 
 	pkt = append(hdr, tmplFS...)
 	pkt = append(pkt, dataFS...)
@@ -102,7 +103,7 @@ func buildV9Packet(t *testing.T) (pkt []byte, templateID uint16) {
 // buildIPFIXPacket 构造一个最小的 IPFIX UDP 包:
 // 包头 + Template Set + Data Set。
 // 字段:IPv4 src/dst + sport/dport + protocol + octetCount64(8B) + packetCount64(8B)
-//      + flowStartMs(8B) + flowEndMs(8B)
+//   - flowStartMs(8B) + flowEndMs(8B)
 func buildIPFIXPacket(t *testing.T) []byte {
 	t.Helper()
 	templateID := uint16(400)
@@ -145,13 +146,13 @@ func buildIPFIXPacket(t *testing.T) []byte {
 	startMs := uint64(1_700_000_000_000) // fixed ms timestamp
 	endMs := startMs + 1000
 	var rec []byte
-	rec = append(rec, 192, 168, 1, 10)  // src
-	rec = append(rec, 192, 168, 1, 20)  // dst
-	rec = appendU16(rec, 4321)           // sport
-	rec = appendU16(rec, 443)            // dport
-	rec = append(rec, 17)                // UDP
-	rec = appendU64(rec, 50000)          // bytes
-	rec = appendU64(rec, 100)            // packets
+	rec = append(rec, 192, 168, 1, 10) // src
+	rec = append(rec, 192, 168, 1, 20) // dst
+	rec = appendU16(rec, 4321)         // sport
+	rec = appendU16(rec, 443)          // dport
+	rec = append(rec, 17)              // UDP
+	rec = appendU64(rec, 50000)        // bytes
+	rec = appendU64(rec, 100)          // packets
 	rec = appendU64(rec, startMs)
 	rec = appendU64(rec, endMs)
 
@@ -168,11 +169,11 @@ func buildIPFIXPacket(t *testing.T) []byte {
 	now := uint32(time.Now().Unix())
 	totalLen := uint16(ipfixHeaderLen + len(tmplSet) + len(dataSet))
 	var hdr []byte
-	hdr = appendU16(hdr, 10)        // version
-	hdr = appendU16(hdr, totalLen)  // length
-	hdr = appendU32(hdr, now)       // exportTime
-	hdr = appendU32(hdr, 1)         // seqNum
-	hdr = appendU32(hdr, 200)       // domainID
+	hdr = appendU16(hdr, 10)       // version
+	hdr = appendU16(hdr, totalLen) // length
+	hdr = appendU32(hdr, now)      // exportTime
+	hdr = appendU32(hdr, 1)        // seqNum
+	hdr = appendU32(hdr, 200)      // domainID
 
 	pkt := append(hdr, tmplSet...)
 	pkt = append(pkt, dataSet...)
@@ -282,7 +283,7 @@ func TestDecodeNFPacketV9NoTemplate(t *testing.T) {
 	now := uint32(time.Now().Unix())
 	var hdr []byte
 	hdr = appendU16(hdr, 9)
-	hdr = appendU16(hdr, 1)     // 1 flowset
+	hdr = appendU16(hdr, 1) // 1 flowset
 	hdr = appendU32(hdr, 5000)
 	hdr = appendU32(hdr, now)
 	hdr = appendU32(hdr, 2)
@@ -363,8 +364,8 @@ func TestDecodeNFPacketWrongVersion(t *testing.T) {
 func TestDecodeNFPacketTooShort(t *testing.T) {
 	for _, pkt := range [][]byte{
 		{},
-		{0x00, 0x09},        // 只有版本号
-		{0x00, 0x09, 0x00},  // 3 字节
+		{0x00, 0x09},       // 只有版本号
+		{0x00, 0x09, 0x00}, // 3 字节
 	} {
 		_, err := DecodeNFPacket(pkt, net.ParseIP("1.2.3.4"), newTemplateCache())
 		if err == nil {

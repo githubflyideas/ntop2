@@ -139,7 +139,7 @@ func TestLiveRowsShapeAndOmissions(t *testing.T) {
 func TestLiveRowsBGPFields(t *testing.T) {
 	snap := live.Snapshot{Rows: []live.Entry{{Seq: 1, Flow: flow.Flow{
 		SrcIP: "10.0.0.1", DstIP: "1.1.1.1",
-		SourceType:  flow.SourceSFlow,
+		SourceType: flow.SourceSFlow,
 		BGPNextHop: "192.168.1.1",
 		ASPath:     "64512 13335",
 	}}}}

@@ -401,7 +401,8 @@ func TestCounterOnlyDeviceStillCounted(t *testing.T) {
 // extendedGatewayRecord 造一个 extended_gateway record (format 1003)。
 //
 // 结构:next_hop(addrType + addr) + as + src_as + src_peer_as +
-//        dst_as_path_segments(count + [type + segLen + AS...])
+//
+//	dst_as_path_segments(count + [type + segLen + AS...])
 func extendedGatewayRecord(nextHopIPv4 []byte, asnPath []uint32) []byte {
 	// next_hop
 	nhPart := cat(u32b(1), nextHopIPv4) // address_type=1(IPv4) + 4 bytes
